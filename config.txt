@@ -1,0 +1,5 @@
+# Parámetros de entrenamiento
+alpha=0.1
+precision=0.0000001
+# Arquitectura de la red [entradas, oculta, salidas]
+arquitectura=[2,1,1]

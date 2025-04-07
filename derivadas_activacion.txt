@@ -1,0 +1,2 @@
+act.*(1-act)
+act.*(1-act)
