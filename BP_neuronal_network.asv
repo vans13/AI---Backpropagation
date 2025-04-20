@@ -104,12 +104,6 @@ classdef BP_neuronal_network
             elseif ~isnumeric(beta) || ~isscalar(beta) || beta < 0 || beta >= 1
                  error('Beta debe ser un escalar numérico entre 0 y 1. Valor recibido: %g', beta);
             end
-            if nargin < 7 % Si axesHandle no se proporciona
-                axesHandle = []; % Ponerlo vacío si no se usa
-            elseif ~isempty(axesHandle) && ~isa(axesHandle, 'matlab.ui.control.UIAxes')
-                warning('El handle para la gráfica no es válido. No se graficará en tiempo real.');
-                axesHandle = [];
-            end
 
             epoca = 0;  % Inicializar las épocas
             errorTotal = inf;  % Inicializar error alto
@@ -131,26 +125,23 @@ classdef BP_neuronal_network
 
             % --- Gráfica en Tiempo Real ---
             plotHandle = []; % Inicializar handle vacío
-            if ~isempty(axesHandle) && isgraphics(axesHandle) % Comprobar si es un handle gráfico válido
-                 % Limpiar ejes y obtener/crear línea de plot
-                 cla(axesHandle); % Limpiar ejes existentes
-                 hold(axesHandle, 'on'); % Mantener para plotear
-                 plotHandle = plot(axesHandle, NaN, NaN, '-b'); % Plotear en los ejes dados
-                 xlabel(axesHandle, 'Época');
-                 ylabel(axesHandle, 'Error MSE/2'); 
-                 title(axesHandle, 'Evolución del Error de Entrenamiento');
-                 grid(axesHandle, 'on');
-                 hold(axesHandle, 'off');
-                 drawnow; % Mostrar figura inicial
+            if isempty(findall(0,'Type','Figure','Tag','TrainingErrorPlot')) % Evita crear figura nueva si ya existe
+                figure('Tag','TrainingErrorPlot', 'Name', 'Evolución del Error'); % Crear figura
+                plotHandle = plot(NaN, NaN, '-b'); % Crear línea de plot inicial (vacía)
+                xlabel('Época');
+                ylabel('Error MSE / 2');
+                title('Evolución del Error de Entrenamiento');
+                grid on;
+                drawnow; % Mostrar figura inicial
             else
-                 % Si la figura existe, obtener el handle del plot
+                % Si la figura existe, obtener el handle del plot
                 fig = findall(0,'Type','Figure','Tag','TrainingErrorPlot');
                 ax = findall(fig, 'Type', 'Axes');
                 plotHandle = findall(ax, 'Type', 'Line');
                  % Limpiar datos anteriores si se re-entrena en la misma figura
                 set(plotHandle, 'XData', NaN, 'YData', NaN); 
                 ylabel(ax, 'Error MSE/2');
-                drawnow; 
+                drawnow;
             end
             % -----------------------------
 
@@ -242,71 +233,6 @@ classdef BP_neuronal_network
             fprintf('\n--- Entrenamiento Finalizado ---\n');
             fprintf('Épocas totales: %d\n', epoca);
             fprintf('Error final MSE/2: %.8f\n', errorFinal);
-        end
-
-        function obj = cargarPesos(obj, filepath)
-            % Carga los pesos y sesgos desde un archivo de texto (solo números).
-            % El archivo debe tener la estructura generada por guardarPesos (solo números).
-            % Requiere que obj.Arquitectura ya esté definida correctamente.
-
-            if isempty(obj.Arquitectura)
-                error('La arquitectura de la red debe estar definida antes de cargar pesos.');
-            end
-             if ~isfile(filepath)
-                  error('El archivo de pesos "%s" no se encontró.', filepath);
-             end
-
-            try
-                % Leer todos los números del archivo
-                allData = readmatrix(filepath); 
-                if isempty(allData)
-                    error('El archivo de pesos "%s" está vacío o no se pudo leer como matriz numérica.', filepath);
-                end
-
-                % Reconstruir Pesos y Sesgos basándose en la Arquitectura
-                current_row = 1;
-                obj.Pesos = cell(1, obj.NumCapas - 1);
-                obj.Sesgos = cell(1, obj.NumCapas - 1);
-
-                for l = 1:(obj.NumCapas - 1)
-                    rowsW = obj.Arquitectura(l+1);
-                    colsW = obj.Arquitectura(l);
-                    rowsB = obj.Arquitectura(l+1);
-                    
-                    % Leer Pesos W_l
-                    if current_row + rowsW - 1 > size(allData, 1)
-                         error('Error leyendo pesos para la capa %d. Datos insuficientes en el archivo.', l);
-                    end
-                    % Extraer las filas correspondientes a la matriz W
-                    W_read = allData(current_row : current_row + rowsW - 1, 1:colsW);
-                     if size(W_read, 1) ~= rowsW || size(W_read, 2) ~= colsW
-                         error('Dimensiones de pesos leídos para capa %d no coinciden con la arquitectura.', l);
-                     end
-                    obj.Pesos{l} = W_read;
-                    current_row = current_row + rowsW + 1; % Avanzar filas de W + 1 línea en blanco
-
-                    % Leer Sesgos b_l
-                    if current_row + rowsB - 1 > size(allData, 1)
-                         error('Error leyendo sesgos para la capa %d. Datos insuficientes en el archivo.', l);
-                    end
-                     % Extraer las filas/columna correspondientes al vector b (debería ser 1 columna)
-                    b_read = allData(current_row : current_row + rowsB - 1, 1);
-                    if size(b_read, 1) ~= rowsB || size(b_read, 2) ~= 1
-                         error('Dimensiones de sesgos leídos para capa %d no coinciden con la arquitectura.', l);
-                     end
-                    obj.Sesgos{l} = b_read;
-                    current_row = current_row + rowsB + 1; % Avanzar filas de b + 1 línea en blanco (separador entre capas)
-
-                end
-                 fprintf('Pesos y sesgos cargados correctamente desde "%s"\n', filepath);
-
-            catch ME
-                fprintf('Error al cargar pesos desde %s: %s\n', filepath, ME.message);
-                % Opcional: Limpiar pesos/sesgos si la carga falla parcialmente
-                obj.Pesos = {}; 
-                obj.Sesgos = {};
-                rethrow(ME); % Relanzar el error para que la app lo maneje
-            end
         end
 
         function guardarPesos(obj, filepath)
@@ -432,57 +358,6 @@ classdef BP_neuronal_network
             disp('(Filas: Patrón Real de Entrada, Columnas: Patrón Predicho por Salida)');
             disp(ConfMatPercent);
 
-        end
-
-        function visualizarArquitectura(obj, axesHandle)
-            % Dibuja una representación simple de la arquitectura en los ejes dados.
-            if isempty(obj.Arquitectura) || ~isgraphics(axesHandle)
-                return;
-            end
-            
-            cla(axesHandle); % Limpiar ejes
-            hold(axesHandle, 'on');
-            title(axesHandle, 'Arquitectura de la Red');
-            xlabel(axesHandle, 'Capa');
-            ylabel(axesHandle, 'Neurona');
-            
-            numLayers = obj.NumCapas;
-            layerNodes = obj.Arquitectura;
-            
-            xCoords = 1:numLayers; % Coordenada X para cada capa
-            yMax = max(layerNodes); % Máximo número de nodos para escala Y
-            
-            nodeCoords = cell(1, numLayers);
-            
-            % Calcular y dibujar nodos
-            for i = 1:numLayers
-                numNodes = layerNodes(i);
-                % Espaciar nodos verticalmente
-                yCoords = linspace(0.1*yMax, 0.9*yMax, numNodes); 
-                if numNodes == 1
-                     yCoords = 0.5*yMax; % Centrar si hay solo 1 nodo
-                end
-                nodeCoords{i} = [repmat(xCoords(i), numNodes, 1), yCoords'];
-                plot(axesHandle, nodeCoords{i}(:,1), nodeCoords{i}(:,2), 'o', 'MarkerSize', 10, 'MarkerFaceColor', 'b');
-                text(axesHandle, nodeCoords{i}(:,1) + 0.1, nodeCoords{i}(:,2), arrayfun(@(n) sprintf('N%d', n), 1:numNodes, 'UniformOutput', false));
-            end
-            
-            % Dibujar conexiones (líneas)
-            for i = 1:(numLayers - 1)
-                nodesFrom = nodeCoords{i};
-                nodesTo = nodeCoords{i+1};
-                for n1 = 1:size(nodesFrom, 1)
-                    for n2 = 1:size(nodesTo, 1)
-                        line(axesHandle, [nodesFrom(n1, 1), nodesTo(n2, 1)], [nodesFrom(n1, 2), nodesTo(n2, 2)], 'Color', [0.5 0.5 0.5]);
-                    end
-                end
-            end
-            
-            xticks(axesHandle, xCoords);
-            xticklabels(axesHandle, arrayfun(@(l) sprintf('Capa %d\n(%d N)', l, layerNodes(l)), 1:numLayers, 'UniformOutput', false));
-            ylim(axesHandle, [0 yMax * 1.1]); % Margen superior
-            set(axesHandle, 'YTick', []); % Ocultar ticks en Y
-            hold(axesHandle, 'off');
         end
 
     end
