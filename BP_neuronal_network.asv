@@ -555,7 +555,16 @@ classdef BP_neuronal_network
                                  error('Valor inválido para la precisión (debe ser positivo): "%s"', value);
                              end
                              config.precision = converted_value; % Guardar como número
-                             
+
+                        case 'beta'
+                            converted_value = str2double(value);
+                             % Validar conversión de beta
+                             if isnan(converted_value) || converted_value <= 0
+                                 error('Valor inválido para beta (debe ser positivo entre 0 y 1): "%s"', value);
+                             end
+                             config.precision = converted_value; % Guardar como número
+ 
+
                         otherwise
                             % Ignorar con advertencia (actual)
                              warning('Clave desconocida "%s" en "%s". Ignorando.', key, filepath);

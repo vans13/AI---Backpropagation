@@ -1,0 +1,5 @@
+# Última configuración utilizada
+alpha = 0.1
+precision = 0.001
+ultima_arquitectura = [784 80 10]
+beta = 0.8
