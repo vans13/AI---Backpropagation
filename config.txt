@@ -1,5 +1,5 @@
-# Parámetros de entrenamiento
-alpha=0.1
-precision=0.0000001
-# Arquitectura de la red [entradas, oculta, salidas]
-arquitectura=[2,1,1]
+# Última configuración de entrenamiento utilizada (2025-04-22 09:02:58)
+alpha = 0.01
+beta = 0.8
+precision = 0.005
+arquitectura = [2352 50 8]

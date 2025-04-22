@@ -42,7 +42,38 @@ classdef BP_neuronal_network
                 end
                 disp('Funciones de activación y derivadas convertidas a handles.');
             end
-        end    
+        end
+
+        function obj = setInitialWeights(obj, initialPesos, initialSesgos)
+            % Establece pesos y sesgos iniciales DESPUÉS de crear el objeto.
+            % Sobrescribe los pesos/sesgos inicializados aleatoriamente.
+            % initialPesos, initialSesgos: Cell arrays con el formato correcto.
+            
+            if isempty(obj.Arquitectura)
+                 error('La arquitectura debe estar definida antes de establecer pesos iniciales.');
+            end
+            if length(initialPesos) ~= obj.NumCapas - 1 || length(initialSesgos) ~= obj.NumCapas - 1
+                error('El número de cell arrays de pesos/sesgos iniciales no coincide con la arquitectura.');
+            end
+            
+            % Validar dimensiones de cada matriz/vector (opcional pero recomendado)
+            for i = 1:(obj.NumCapas - 1)
+                expected_W_size = [obj.Arquitectura(i+1), obj.Arquitectura(i)];
+                expected_b_size = [obj.Arquitectura(i+1), 1];
+                if ~isequal(size(initialPesos{i}), expected_W_size)
+                     error('Tamaño de pesos iniciales para capa %d incorrecto. Esperado [%d %d], recibido [%d %d].', ...
+                           i, expected_W_size(1), expected_W_size(2), size(initialPesos{i},1), size(initialPesos{i},2));
+                end
+                 if ~isequal(size(initialSesgos{i}), expected_b_size)
+                      error('Tamaño de sesgos iniciales para capa %d incorrecto. Esperado [%d %d], recibido [%d %d].', ...
+                           i, expected_b_size(1), expected_b_size(2), size(initialSesgos{i},1), size(initialSesgos{i},2));
+                 end
+            end
+            
+            obj.Pesos = initialPesos;
+            obj.Sesgos = initialSesgos;
+            disp('Pesos y sesgos iniciales establecidos desde archivo.');
+        end
         
         function [salidaFinal, activaciones, nets] = feedforward(obj, entrada)
             % Realiza la pasada hacia adelante (feedforward)
@@ -73,7 +104,7 @@ classdef BP_neuronal_network
             salidaFinal = activacion; % La última activación es la salida de la red
         end
 
-        function [obj, epoca, errorFinal, historial_error, historial_pesos, historial_sesgos] = entrenar(obj, X_entrada, Y_deseada, alpha, precision, beta, axesHandle)
+        function [obj, epoca, errorFinal, historial_error, historial_pesos, historial_sesgos, savedEpochs] = entrenar(obj, X_entrada, Y_deseada, alpha, precision, beta, axesHandleError)
                         % Entrena la red usando backpropagation
             % DEVUELVE: 
             %   obj: El objeto red entrenado
@@ -104,11 +135,23 @@ classdef BP_neuronal_network
             elseif ~isnumeric(beta) || ~isscalar(beta) || beta < 0 || beta >= 1
                  error('Beta debe ser un escalar numérico entre 0 y 1. Valor recibido: %g', beta);
             end
-            if nargin < 7 % Si axesHandle no se proporciona
-                axesHandle = []; % Ponerlo vacío si no se usa
-            elseif ~isempty(axesHandle) && ~isa(axesHandle, 'matlab.ui.control.UIAxes')
-                warning('El handle para la gráfica no es válido. No se graficará en tiempo real.');
-                axesHandle = [];
+            if nargin>=7 && isgraphics(axesHandleError)
+                cla(axesHandleError);
+                hl = animatedline(axesHandleError,'Marker','.','LineStyle','-');
+                title(axesHandleError,'Error MSE/2 vs Épocas');
+                xlabel(axesHandleError,'Época');
+                ylabel(axesHandleError,'Error MSE/2');
+                grid(axesHandleError,'on');
+                % Ajustes de estilo SÓLO en ese axes:
+                    axesHandleError.Box = 'off';                     % desactiva la caja completa
+                    axesHandleError.XAxisLocation = 'bottom';       % espina inferior
+                    axesHandleError.YAxisLocation = 'left';         % espina izquierda
+                    axesHandleError.LineWidth = 1;                  % grosor de las espinas
+                    axesHandleError.XColor = [0 0 0];               % color negro
+                    axesHandleError.YColor = [0 0 0];               % color negro
+                    axesHandleError.Layer = 'bottom';               % dibuja ejes encima de la grilla
+            else
+                hl = [];
             end
 
             epoca = 0;  % Inicializar las épocas
@@ -117,49 +160,29 @@ classdef BP_neuronal_network
             historial_error = []; 
             historial_pesos = {}; % Cell array para guardar cell arrays de pesos
             historial_sesgos = {}; % Cell array para guardar cell arrays de sesgos
+            savedEpochs = []; 
             
             % --- INICIALIZAR CAMBIOS ANTERIORES (para Momentum) ---
-            delta_Pesos_prev = cell(1, obj.NumCapas - 1);
-            delta_Sesgos_prev = cell(1, obj.NumCapas - 1);
+                        delta_W_prev = cell(1, obj.NumCapas - 1);
+            delta_b_prev = cell(1, obj.NumCapas - 1);
             for l = 1:(obj.NumCapas - 1)
-                delta_Pesos_prev{l} = zeros(size(obj.Pesos{l})); % Inicializar a cero
-                delta_Sesgos_prev{l} = zeros(size(obj.Sesgos{l})); % Inicializar a cero
+                delta_W_prev{l} = zeros(size(obj.Pesos{l})); % Inicializar a cero
+                delta_b_prev{l} = zeros(size(obj.Sesgos{l})); % Inicializar a cero
             end
 
             fprintf('\n--- Iniciando Entrenamiento ---\n');
             fprintf('Patrones: %d, Alpha: %.4f, Precisión requerida: %.g\n', numPatrones, alpha, precision);
+             maxEpocas = 5000000; % Límite de seguridad
 
-            % --- Gráfica en Tiempo Real ---
-            plotHandle = []; % Inicializar handle vacío
-            if ~isempty(axesHandle) && isgraphics(axesHandle) % Comprobar si es un handle gráfico válido
-                 % Limpiar ejes y obtener/crear línea de plot
-                 cla(axesHandle); % Limpiar ejes existentes
-                 hold(axesHandle, 'on'); % Mantener para plotear
-                 plotHandle = plot(axesHandle, NaN, NaN, '-b'); % Plotear en los ejes dados
-                 xlabel(axesHandle, 'Época');
-                 ylabel(axesHandle, 'Error MSE/2'); 
-                 title(axesHandle, 'Evolución del Error de Entrenamiento');
-                 grid(axesHandle, 'on');
-                 hold(axesHandle, 'off');
-                 drawnow; % Mostrar figura inicial
-            else
-                 % Si la figura existe, obtener el handle del plot
-                fig = findall(0,'Type','Figure','Tag','TrainingErrorPlot');
-                ax = findall(fig, 'Type', 'Axes');
-                plotHandle = findall(ax, 'Type', 'Line');
-                 % Limpiar datos anteriores si se re-entrena en la misma figura
-                set(plotHandle, 'XData', NaN, 'YData', NaN); 
-                ylabel(ax, 'Error MSE/2');
-                drawnow; 
-            end
-            % -----------------------------
-
-            while errorTotal > precision
+            while errorTotal > precision && epoca < maxEpocas
                 epoca = epoca + 1;
                 errorActual = 0;
+                idx_shuffled = randperm(numPatrones);
+                X_entrada_shuffled = X_entrada(:, idx_shuffled);
+                Y_deseada_shuffled = Y_deseada(:, idx_shuffled);
                 for i = 1:numPatrones
-                    x = X_entrada(:,i);
-                    Yd = Y_deseada(:,i);
+                    x = X_entrada_shuffled(:, i); 
+                    Yd = Y_deseada_shuffled(:, i);
                     
                     %Primero se realiza el feedforward
                     [Yo, activaciones, nets] = obj.feedforward(x);
@@ -196,47 +219,58 @@ classdef BP_neuronal_network
                         grad_W = delta_l * activacion_previa'; % Gradiente pesos W^l: (n_l x 1) * (1 x n_{l-1}) = (n_l x n_{l-1})
                         grad_b = delta_l;                      % Gradiente bias b^l: (n_l x 1)
 
-                        %Guardar pesos para siguiente actualización:
-                        pesos_a = obj.Pesos{l};
-                        sesgos_a = obj.Sesgos{l};
+                        % Calcular el cambio actual debido al gradiente
+                        current_gradient_step_W = alpha * grad_W;
+                        current_gradient_step_b = alpha * grad_b;
+
+                        % Calcular el cambio total CON momentum
+                        % delta(t) = alpha*grad(t) + beta*delta(t-1)
+                        delta_W = current_gradient_step_W + beta * delta_W_prev{l};
+                        delta_b = current_gradient_step_b + beta * delta_b_prev{l};
 
                         % Actualizar pesos y sesgos de la capa l
-                        obj.Pesos{l} = obj.Pesos{l} + alpha * grad_W + beta * (obj.Pesos{l}-delta_Pesos_prev{l});
-                        obj.Sesgos{l} = obj.Sesgos{l} + alpha * grad_b + beta * (obj.Sesgos{l}-delta_Sesgos_prev{l}); 
+                        obj.Pesos{l} = obj.Pesos{l} + delta_W;
+                        obj.Sesgos{l} = obj.Sesgos{l} + delta_b; 
 
-                        % Guardar el cambio hecho para usarlo como el peso anterior en la siguiente iteración
-                        delta_Pesos_prev{l} = pesos_a;
-                        delta_Sesgos_prev{l} = sesgos_a;
+                        % Guardar el CAMBIO TOTAL de esta iteración para usarlo 
+                        % como el término de momentum en la SIGUIENTE iteración
+                        delta_W_prev{l} = delta_W; 
+                        delta_b_prev{l} = delta_b;
                     end
                 end
-                % Calcular error total promedio de la época
-                errorTotal = errorActual / numPatrones;
-                % --- Guardar en Históricos (al final de la época) ---
-                historial_error(epoca) = errorTotal;
-                if mod(epoca, 10) == 0 || epoca == 1 % Guardar cada 10 épocas y la primera
-                    historial_pesos{end+1} = obj.Pesos; % Guarda el cell array actual de pesos  
-                    historial_sesgos{end+1} = obj.Sesgos; % Guarda el cell array actual de sesgos
-                end
                 
-                % --- Actualizar Gráfica en Tiempo Real ---
-                if ~isempty(plotHandle) && ishandle(plotHandle) % Solo si hay gráfica válida
-                    % Actualizar datos del plot (más eficiente que plotear de nuevo)
-                    set(plotHandle, 'XData', 1:epoca, 'YData', historial_error); 
-                    % Ajustar límites eje X dinámicamente (opcional, puede ralentizar)
-                    % parentAxes = get(plotHandle, 'Parent');
-                    % xlim(parentAxes, [0 max(10, epoca + round(epoca*0.1))]); % Poner un margen
-                    drawnow limitrate; % Actualizar la ventana gráfica (limitrate es más eficiente)
+                % Calcular error total promedio de la época (recalculando sobre el dataset original)
+                % Es más preciso calcular el error sobre todo el dataset después de actualizar pesos
+                errorTotal = 0;
+                for i_eval = 1:numPatrones
+                      Yo_eval = obj.feedforward(X_entrada(:, i_eval)); % Ojo: usa X_entrada original
+                      errorTotal = errorTotal + 0.5 * sum((Y_deseada(:, i_eval) - Yo_eval).^2);
                 end
+                errorTotal = errorTotal / numPatrones; % Promedio MSE/2
+                % Guardar en Históricos 
+                historial_error(end+1) = errorTotal;
+                % Guardar pesos/sesgos (menos frecuente para ahorrar memoria)
+                 if mod(epoca, 10) == 0 || epoca == 1 || errorTotal <= precision 
+                     if ~isempty(hl) && isvalid(hl)
+                        addpoints(hl, epoca, errorTotal);
+                        drawnow limitrate;
+                     end
+                     historial_pesos{end+1} = obj.Pesos;   
+                     historial_sesgos{end+1} = obj.Sesgos;
+                     savedEpochs(end+1) = epoca; 
+                 end
 
                 % Imprimir progreso
                 if mod(epoca, 250) == 0 || errorTotal <= precision || epoca == 1
                   fprintf('Época: %d, Error MSE/2: %.8f\n', epoca, errorTotal);
                 end
                 % Condición de seguridad
-                if epoca > 5000000 
-                  warning('Entrenamiento detenido: Límite máximo de épocas alcanzado.');
-                  break;
+                if epoca > 50 && historial_error(epoca) > historial_error(epoca-10)
+                    break
                 end
+            end
+            if epoca == maxEpocas
+                 warning('Entrenamiento detenido: Límite máximo de épocas (%d) alcanzado.', maxEpocas);
             end
             errorFinal = errorTotal; % Guardar el último error calculado
             fprintf('\n--- Entrenamiento Finalizado ---\n');
@@ -244,121 +278,104 @@ classdef BP_neuronal_network
             fprintf('Error final MSE/2: %.8f\n', errorFinal);
         end
 
-        function obj = cargarPesos(obj, filepath)
-            % Carga los pesos y sesgos desde un archivo de texto (solo números).
-            % El archivo debe tener la estructura generada por guardarPesos (solo números).
-            % Requiere que obj.Arquitectura ya esté definida correctamente.
-
-            if isempty(obj.Arquitectura)
-                error('La arquitectura de la red debe estar definida antes de cargar pesos.');
-            end
-             if ~isfile(filepath)
-                  error('El archivo de pesos "%s" no se encontró.', filepath);
+        function guardarPesos(obj, filepath) % CAMBIADO nombre de this a obj
+             if isempty(obj.Pesos) || isempty(obj.Sesgos); warning('Nada que guardar.'); return; end
+             try
+                 fid = fopen(filepath, 'wt'); 
+                 if fid == -1; error('No se pudo abrir "%s" para guardar.', filepath); end
+                 
+                 % 1. Guardar Arquitectura (como string separado por espacios)
+                 fprintf(fid, '%d ', obj.Arquitectura); 
+                 fprintf(fid, '\n'); % Nueva línea después de la arquitectura
+                 
+                 % 2. Guardar Pesos y Sesgos (un número por línea)
+                 for l = 1:(obj.NumCapas - 1)
+                     W = obj.Pesos{l};  % Dim: [out x in]
+                     b = obj.Sesgos{l}; % Dim: [out x 1]
+                     
+                     % Escribir W elemento por elemento (MATLAB lee por columnas con fscanf)
+                     % Para que reshape funcione bien al leer, guardamos por columnas (orden de MATLAB)
+                     for col = 1:size(W, 2) % Iterar por columnas (entrada)
+                         for row = 1:size(W, 1) % Iterar por filas (salida)
+                             fprintf(fid, '%.15g\n', W(row, col)); 
+                         end
+                     end
+                     
+                     % Escribir b elemento por elemento
+                     for row = 1:length(b)
+                          fprintf(fid, '%.15g\n', b(row));
+                     end
+                 end
+                 fclose(fid);
+                 fprintf('Pesos guardados correctamente en "%s".\n', filepath); % Mensaje consola opcional
+             catch ME
+                 warning('Error guardando pesos en %s: %s', filepath, ME.message);
+                 if exist('fid','var') && fid ~= -1; try fclose(fid); catch; end; end 
              end
+        end % Fin guardarPesos
 
-            try
-                % Leer todos los números del archivo
-                allData = readmatrix(filepath); 
-                if isempty(allData)
-                    error('El archivo de pesos "%s" está vacío o no se pudo leer como matriz numérica.', filepath);
-                end
-
-                % Reconstruir Pesos y Sesgos basándose en la Arquitectura
-                current_row = 1;
-                obj.Pesos = cell(1, obj.NumCapas - 1);
-                obj.Sesgos = cell(1, obj.NumCapas - 1);
-
-                for l = 1:(obj.NumCapas - 1)
-                    rowsW = obj.Arquitectura(l+1);
-                    colsW = obj.Arquitectura(l);
-                    rowsB = obj.Arquitectura(l+1);
-                    
-                    % Leer Pesos W_l
-                    if current_row + rowsW - 1 > size(allData, 1)
-                         error('Error leyendo pesos para la capa %d. Datos insuficientes en el archivo.', l);
-                    end
-                    % Extraer las filas correspondientes a la matriz W
-                    W_read = allData(current_row : current_row + rowsW - 1, 1:colsW);
-                     if size(W_read, 1) ~= rowsW || size(W_read, 2) ~= colsW
-                         error('Dimensiones de pesos leídos para capa %d no coinciden con la arquitectura.', l);
+        % --- MÉTODO cargarPesos (CORREGIDO y devuelve arquitectura) ---
+        function [obj, arquitectura] = cargarPesos(obj, filepath) % CAMBIADO nombre de this a obj, devuelve arch
+             if ~isfile(filepath); error('Archivo pesos "%s" no encontrado.', filepath); end
+             fid = fopen(filepath, 'r');
+             if fid == -1; error('No se pudo abrir el archivo de pesos.'); end
+             
+             try
+                 % Leer arquitectura
+                 header = fgetl(fid);
+                 arquitectura = str2num(header); %#ok<ST2NM>
+                 if isempty(arquitectura) || ~isvector(arquitectura) || any(arquitectura<=0); error('No se pudo leer arquitectura válida de "%s".', filepath); end
+                 
+                 % Leer el resto como números
+                 data = fscanf(fid, '%f'); % Lee todos los números restantes en una columna
+                 fclose(fid); % Cerrar aquí después de leer todo
+                 
+                 if isempty(data); error('No se encontraron datos numéricos de pesos/sesgos en "%s".', filepath); end
+                 
+                 % Configurar objeto con arquitectura leída
+                 obj.Arquitectura = arquitectura;
+                 obj.NumCapas = numel(arquitectura);
+                 obj.Pesos = cell(1, obj.NumCapas - 1);
+                 obj.Sesgos = cell(1, obj.NumCapas - 1);
+                 
+                 % Reconstruir Pesos y Sesgos
+                 idx = 1; % Puntero para recorrer 'data'
+                 for l = 1:(obj.NumCapas-1)
+                     nOut = arquitectura(l+1); % Neuronas en capa actual (l+1) -> Filas de W, b
+                     nIn = arquitectura(l);   % Neuronas en capa anterior (l) -> Columnas de W
+                     
+                     totalW = nOut * nIn;
+                     totalB = nOut;
+                     
+                     % Validar si hay suficientes datos restantes
+                     if idx + totalW - 1 > numel(data)
+                         error('Datos insuficientes en "%s" para leer pesos W%d (se esperaban %d).', filepath, l, totalW);
                      end
-                    obj.Pesos{l} = W_read;
-                    current_row = current_row + rowsW + 1; % Avanzar filas de W + 1 línea en blanco
-
-                    % Leer Sesgos b_l
-                    if current_row + rowsB - 1 > size(allData, 1)
-                         error('Error leyendo sesgos para la capa %d. Datos insuficientes en el archivo.', l);
-                    end
-                     % Extraer las filas/columna correspondientes al vector b (debería ser 1 columna)
-                    b_read = allData(current_row : current_row + rowsB - 1, 1);
-                    if size(b_read, 1) ~= rowsB || size(b_read, 2) ~= 1
-                         error('Dimensiones de sesgos leídos para capa %d no coinciden con la arquitectura.', l);
+                     % --- CORRECCIÓN RESHAPE PESOS: [nOut, nIn] ---
+                     % Como guardamos por columnas, reshape llena por columnas, resultando en [nOut x nIn]
+                     obj.Pesos{l} = reshape(data(idx : idx + totalW - 1), [nOut, nIn]);
+                     idx = idx + totalW;
+                     
+                     if idx + totalB - 1 > numel(data)
+                          error('Datos insuficientes en "%s" para leer sesgos b%d (se esperaban %d).', filepath, l, totalB);
                      end
-                    obj.Sesgos{l} = b_read;
-                    current_row = current_row + rowsB + 1; % Avanzar filas de b + 1 línea en blanco (separador entre capas)
+                      % --- CORRECCIÓN RESHAPE SESGOS: [nOut, 1] ---
+                     obj.Sesgos{l} = reshape(data(idx : idx + totalB - 1), [nOut, 1]);
+                     idx = idx + totalB;
+                 end
+                 
+                 if idx - 1 ~= numel(data)
+                      warning('Es posible que sobren datos en el archivo de pesos "%s".', filepath);
+                 end
 
-                end
-                 fprintf('Pesos y sesgos cargados correctamente desde "%s"\n', filepath);
+                 fprintf('Pesos y sesgos cargados desde "%s".\n', filepath); % Mensaje consola opcional
 
-            catch ME
-                fprintf('Error al cargar pesos desde %s: %s\n', filepath, ME.message);
-                % Opcional: Limpiar pesos/sesgos si la carga falla parcialmente
-                obj.Pesos = {}; 
-                obj.Sesgos = {};
-                rethrow(ME); % Relanzar el error para que la app lo maneje
-            end
-        end
-
-        function guardarPesos(obj, filepath)
-            % Guarda los pesos y sesgos actuales de la red en un archivo de texto.
-            % filepath: Ruta completa del archivo donde se guardarán los pesos.
-
-            if isempty(obj.Pesos) || isempty(obj.Sesgos)
-                 warning('No se pueden guardar los pesos: la red no parece estar inicializada o entrenada.');
-                 return;
-            end
-
-            try
-                fid = fopen(filepath, 'wt'); % Abrir en modo texto escritura ('wt')
-                if fid == -1
-                    error('No se pudo abrir el archivo "%s" para guardar los pesos.', filepath); 
-                end
-                % --- Bucle para escribir pesos y sesgos ---
-                for l = 1:(obj.NumCapas - 1)
-                    % Escribir Pesos W_l
-                    W = obj.Pesos{l};
-                    for r = 1:size(W, 1) % Iterar por filas de la matriz de pesos
-                        fprintf(fid, '%.15g\t', W(r, :)); % Escribir elementos de la fila, separados por tabulador, alta precisión
-                        fprintf(fid, '\n'); % Nueva línea al final de cada fila de pesos
-                    end
-                    fprintf(fid, '\n'); % Línea en blanco después de la matriz de pesos
-
-                    % Escribir Sesgos b_l
-                    b = obj.Sesgos{l};
-                    for r = 1:size(b, 1) % Iterar por elementos del vector de sesgos
-                         fprintf(fid, '%.15g\n', b(r)); % Escribir cada sesgo en su propia línea
-                    end
-                    
-                    % Añadir una línea en blanco extra entre capas (excepto después de la última)
-                    if l < (obj.NumCapas - 1)
-                         fprintf(fid, '\n'); 
-                    end
-                end
-                % --- Fin del bucle ---
-
-                fclose(fid);
-                % fprintf('Pesos y sesgos guardados en: "%s"\n', filepath);
-
-            catch ME
-                warning('Ocurrió un error al guardar los pesos en %s: %s', filepath, ME.message);
-                if exist('fid','var') && fid ~= -1 
-                    try 
-                        fclose(fid); 
-                    catch m
-                        warning('Ocurrió un error al cerrar el archivo. %s: %s', filepath, m.message);
-                    end
-                end 
-            end
+             catch ME
+                 if exist('fid','var') && fid ~= -1; try fclose(fid); catch; end; end 
+                 obj.Pesos = {}; obj.Sesgos = {}; % Limpiar en caso de error
+                 fprintf('Error al cargar pesos desde %s: %s\n', filepath, ME.message);
+                 rethrow(ME); 
+             end
         end
 
         function [ConfMatPercent, ConfMatCounts] = evaluarClasificacion(obj, X_eval, Y_eval)
@@ -372,239 +389,80 @@ classdef BP_neuronal_network
             % X_eval: Matriz de entradas para evaluación (num_entradas x num_patrones)
             % Y_eval: Matriz de salidas deseadas (num_salidas x num_patrones)
 
-            if isempty(obj.Pesos) || isempty(obj.Sesgos)
-                 error('La red no parece estar inicializada o entrenada.');
-            end
-             if size(X_eval, 2) ~= size(Y_eval, 2)
-                 error('El número de patrones de entrada y salida para evaluación no coincide.');
+            if isempty(obj.Pesos) || isempty(obj.Sesgos); error('La red no parece estar inicializada o entrenada.'); end
+             if size(X_eval, 2) ~= size(Y_eval, 2); error('El número de patrones de entrada y salida para evaluación no coincide.'); end
+             if size(X_eval, 1) ~= obj.Arquitectura(1) || size(Y_eval, 1) ~= obj.Arquitectura(end); error('Las dimensiones de X_eval o Y_eval no coinciden con la arquitectura de la red.'); end
+             numPatronesEval = size(X_eval, 2);
+             ConfMatCounts = zeros(numPatronesEval, numPatronesEval); 
+             fprintf('Evaluando clasificación...\n');
+             for i = 1:numPatronesEval 
+                 x_i = X_eval(:, i); Yo_i = obj.feedforward(x_i); 
+                 distancias = sum((Yo_i - Y_eval).^2, 1); % Distancia a todos los targets Y_eval
+                 [~, k_pred] = min(distancias); 
+                 ConfMatCounts(i, k_pred) = ConfMatCounts(i, k_pred) + 1;
+                 if mod(i, 50) == 0; fprintf('Evaluado patrón %d de %d\n', i, numPatronesEval); end
              end
-             if size(X_eval, 1) ~= obj.Arquitectura(1) || size(Y_eval, 1) ~= obj.Arquitectura(end)
-                 error('Las dimensiones de X_eval o Y_eval no coinciden con la arquitectura de la red.');
-             end
-
-            numPatronesEval = size(X_eval, 2);
-            ConfMatCounts = zeros(numPatronesEval, numPatronesEval); % Filas: Patrón Real, Columnas: Patrón Predicho
-
-            fprintf('Evaluando clasificación...\n');
-            for i = 1:numPatronesEval % Para cada patrón de entrada REAL i
-                x_i = X_eval(:, i);
-                
-                % Obtener la salida de la red para la entrada i
-                Yo_i = obj.feedforward(x_i); 
-                
-                % Encontrar a qué salida deseada (Y_eval(:,k)) se parece más Yo_i
-                distancias = zeros(1, numPatronesEval);
-                for k = 1:numPatronesEval 
-                    % Calcular distancia euclidiana cuadrática (más simple)
-                    distancias(k) = sum((Yo_i - Y_eval(:, k)).^2);
-                end
-                [~, k_pred] = min(distancias); % k_pred es el índice del patrón PREDICHO
-
-                % Incrementar la matriz de confusión
-                % Fila i (real), Columna k_pred (predicha)
-                ConfMatCounts(i, k_pred) = ConfMatCounts(i, k_pred) + 1;
-                
-                 if mod(i, 50) == 0 % Mostrar progreso
-                    fprintf('Evaluado patrón %d de %d\n', i, numPatronesEval);
-                 end
-            end
-            fprintf('Evaluación completada.\n');
-
-            % Calcular porcentajes
-            ConfMatPercent = zeros(size(ConfMatCounts));
-            sumRows = sum(ConfMatCounts, 2); % Suma de cada fila (total de veces que se presentó el patrón i)
-            for i = 1:numPatronesEval
-                if sumRows(i) > 0
-                    ConfMatPercent(i, :) = (ConfMatCounts(i, :) / sumRows(i)) * 100;
-                else
-                    % Si un patrón nunca se presentó (o sumRows es 0), dejar la fila en 0 o NaN
-                    ConfMatPercent(i, :) = NaN; 
-                    warning('El patrón de entrada %d no tuvo instancias en la suma de su fila en la matriz de confusión.', i);
-                end
-            end
-
-            % Opcional: Mostrar las matrices
-            disp('Matriz de Confusión (Conteos):');
-            disp('(Filas: Patrón Real de Entrada, Columnas: Patrón Predicho por Salida)');
-            disp(ConfMatCounts);
-            
-            disp('Matriz de Confusión (Porcentajes %):');
-            disp('(Filas: Patrón Real de Entrada, Columnas: Patrón Predicho por Salida)');
-            disp(ConfMatPercent);
-
-        end
-
-        function visualizarArquitectura(obj, axesHandle)
-            % Dibuja una representación simple de la arquitectura en los ejes dados.
-            if isempty(obj.Arquitectura) || ~isgraphics(axesHandle)
-                return;
-            end
-            
-            cla(axesHandle); % Limpiar ejes
-            hold(axesHandle, 'on');
-            title(axesHandle, 'Arquitectura de la Red');
-            xlabel(axesHandle, 'Capa');
-            ylabel(axesHandle, 'Neurona');
-            
-            numLayers = obj.NumCapas;
-            layerNodes = obj.Arquitectura;
-            
-            xCoords = 1:numLayers; % Coordenada X para cada capa
-            yMax = max(layerNodes); % Máximo número de nodos para escala Y
-            
-            nodeCoords = cell(1, numLayers);
-            
-            % Calcular y dibujar nodos
-            for i = 1:numLayers
-                numNodes = layerNodes(i);
-                % Espaciar nodos verticalmente
-                yCoords = linspace(0.1*yMax, 0.9*yMax, numNodes); 
-                if numNodes == 1
-                     yCoords = 0.5*yMax; % Centrar si hay solo 1 nodo
-                end
-                nodeCoords{i} = [repmat(xCoords(i), numNodes, 1), yCoords'];
-                plot(axesHandle, nodeCoords{i}(:,1), nodeCoords{i}(:,2), 'o', 'MarkerSize', 10, 'MarkerFaceColor', 'b');
-                text(axesHandle, nodeCoords{i}(:,1) + 0.1, nodeCoords{i}(:,2), arrayfun(@(n) sprintf('N%d', n), 1:numNodes, 'UniformOutput', false));
-            end
-            
-            % Dibujar conexiones (líneas)
-            for i = 1:(numLayers - 1)
-                nodesFrom = nodeCoords{i};
-                nodesTo = nodeCoords{i+1};
-                for n1 = 1:size(nodesFrom, 1)
-                    for n2 = 1:size(nodesTo, 1)
-                        line(axesHandle, [nodesFrom(n1, 1), nodesTo(n2, 1)], [nodesFrom(n1, 2), nodesTo(n2, 2)], 'Color', [0.5 0.5 0.5]);
-                    end
-                end
-            end
-            
-            xticks(axesHandle, xCoords);
-            xticklabels(axesHandle, arrayfun(@(l) sprintf('Capa %d\n(%d N)', l, layerNodes(l)), 1:numLayers, 'UniformOutput', false));
-            ylim(axesHandle, [0 yMax * 1.1]); % Margen superior
-            set(axesHandle, 'YTick', []); % Ocultar ticks en Y
-            hold(axesHandle, 'off');
+             fprintf('Evaluación completada.\n');
+             ConfMatPercent = zeros(size(ConfMatCounts)); sumRows = sum(ConfMatCounts, 2); 
+             nonZeroRows = sumRows > 0;
+             ConfMatPercent(nonZeroRows, :) = (ConfMatCounts(nonZeroRows, :) ./ sumRows(nonZeroRows)) * 100;
+             ConfMatPercent(~nonZeroRows, :) = NaN; % Marcar filas no evaluadas
+             if any(~nonZeroRows); warning('Algunos patrones de entrada no tuvieron instancias en la matriz de confusión.'); end
+             % Quitar los disp para no llenar la consola desde la App
+             % disp('Matriz de Confusión (Conteos):'); disp(ConfMatCounts);
+             % disp('Matriz de Confusión (Porcentajes %):'); disp(ConfMatPercent);
         end
 
     end
 
     methods (Static)
+
         function config = leerConfig(filepath)
-            % Inicializar estructura de configuración
-            config = struct();
-            if ~isfile(filepath)
-                 warning('Archivo de configuración "%s" no encontrado.', filepath);
-                 return;
-            end
-            %Leer todas las líneas del archivo
-            try
-                lines = readlines(filepath, "Encoding", "UTF-8"); 
-            catch ME
-                error('No se pudo leer el archivo de configuración "%s": %s', filepath, ME.message);
-            end
-            %Procesar cada línea
-            for i = 1:length(lines)
-                line = strtrim(lines{i}); % readlines devuelve cell array o string array
-                %Ignorar líneas vacías y comentarios (usando '#')
-                if isempty(line) || startsWith(line, '#') 
-                    continue;
-                end
-                % Dividir línea en clave y valor por el PRIMER '='
-                key_value = strsplit(lines{i}, '=');
-
-                if length(key_value) < 2
-                    warning('Línea mal formada (sin "="): "%s" en "%s". Ignorando.', line, filepath); 
-                    continue; % Saltar línea mal formada
-                end
-                key = strtrim(key_value{1});
-                value = strtrim(key_value{2}); % Valor inicial como string
-                % Validar que la clave sea un nombre de variable válido
-                if ~isvarname(key)
-                     warning('Clave inválida "%s" en "%s". Ignorando.', key, filepath);
-                     continue;
-                end
-                % 8. Convertir los valores según la clave usando switch
-                try % Envuelve la conversión en try-catch para robustez
-                    switch key
-                        case 'ultima_arquitectura' 
-                            converted_value = str2num(value); 
-                            % Validar conversión de arquitectura
-                            if isempty(converted_value) || ~isnumeric(converted_value) || ~isrow(converted_value)
-                                error('Valor inválido o no es vector fila para arquitectura: "%s"', value);
-                            end
-                            config.ultima_arquitectura = converted_value;
-
-                        case 'alpha' 
-                            converted_value = str2double(value); 
-                             % Validar conversión de alfa
-                            if isnan(converted_value)
-                                 error('Valor numérico inválido para alfa: "%s"', value);
-                            end
-                            config.alpha = converted_value;
-
-                        case 'precision' 
-                             converted_value = str2double(value);
-                             % Validar conversión de precisión
-                             if isnan(converted_value) || converted_value <= 0
-                                 error('Valor inválido para la precisión (debe ser positivo): "%s"', value);
-                             end
-                             config.precision = converted_value; % Guardar como número
-                             
-                        otherwise
-                            % Ignorar con advertencia (actual)
-                             warning('Clave desconocida "%s" en "%s". Ignorando.', key, filepath);
-                    end
-                catch ME
-                    % Capturar errores durante la conversión o validación
-                    warning('Error procesando clave "%s" con valor "%s" en "%s": %s. Ignorando entrada.', key, value, filepath, ME.message);
-                end
-            end
-            if ~isempty(fieldnames(config))
-                fprintf('Configuración cargada desde "%s":\n', filepath);
-                disp(config);
-            else
-                 warning('No se cargó ninguna configuración válida desde "%s".', filepath);
-            end
+            % ... (código leerConfig que lee alpha, beta, precision, arquitectura) ...
+             config = struct(); if ~isfile(filepath); warning('Archivo config "%s" no encontrado.', filepath); return; end
+             try; lines = readlines(filepath, "Encoding", "UTF-8"); catch ME; warning('No se pudo leer config "%s": %s.', filepath, ME.message); return; end
+             fprintf('Leyendo configuración desde "%s"...\n', filepath); keysFound = {};
+             for i = 1:length(lines); line = strtrim(lines{i}); if isempty(line) || startsWith(line, '#'); continue; end; parts = split(line, '='); if length(parts) < 2; warning('Línea mal formada: "%s". Ignorando.', line); continue; end; key = lower(strtrim(parts{1})); valueStr = strtrim(strjoin(parts(2:end), '='));
+                 try; switch key; case 'arquitectura'; val = str2num(valueStr); if ~isempty(val) && isnumeric(val) && isvector(val) && all(val > 0) && all(fix(val)==val); config.arquitectura = val; keysFound{end+1} = key; else; warning('Valor inválido para arquitectura: "%s".', valueStr); end; case 'alpha'; val = str2double(valueStr); if ~isnan(val) && val > 0; config.alpha = val; keysFound{end+1} = key; else; warning('Valor inválido para alpha: "%s".', valueStr); end; case 'precision'; val = str2double(valueStr); if ~isnan(val) && val > 0; config.precision = val; keysFound{end+1} = key; else; warning('Valor inválido para precision: "%s".', valueStr); end; case 'beta'; val = str2double(valueStr); if ~isnan(val) && val >= 0 && val < 1; config.beta = val; keysFound{end+1} = key; else; warning('Valor inválido para beta: "%s".', valueStr); end; otherwise; warning('Clave desconocida "%s". Ignorando.', key); end; catch ME; warning('Error procesando clave "%s": %s.', key, ME.message); end; end
+             if ~isempty(fieldnames(config)); fprintf('Configuración cargada (%s).\n', strjoin(keysFound, ', ')); else; warning('No se cargó configuración válida desde "%s".', filepath); end
         end
 
         function funciones = leerFunciones(filepath)
-            % Lee las funciones (una por línea) y devuelve un cell array de strings.
-            funciones = {};
-            fid = fopen(filepath, 'r');
-            if fid == -1
-                error('No se pudo abrir el archivo de funciones: %s', filepath);
-            end
-            while ~feof(fid)
-                line = strtrim(fgetl(fid));
-                 if ~isempty(line) && ~startsWith(line, '#')
-                     funciones{end+1, 1} = line;
-                 end
-            end
-            fclose(fid);
+             % ... (código leerFunciones sin cambios) ...
+             funciones = {}; fid = fopen(filepath, 'r'); if fid == -1; error('No se pudo abrir el archivo de funciones: %s', filepath); end
+             while ~feof(fid); line = strtrim(fgetl(fid)); if ~isempty(line) && ~startsWith(line, '#'); funciones{end+1, 1} = line; end; end; fclose(fid);
              fprintf('Funciones cargadas desde ''%s'': %d funciones.\n', filepath, length(funciones));
         end
 
-        function guardarConfig(path, config_struct)
+        function guardarConfig(filepath, config_struct)
             % Guarda la configuración relevante en un archivo.
-            % Sobreescribe el archivo si existe.
-            fid = fopen(path, 'w');
-            if fid == -1
-                warning('No se pudo abrir "%s" para escribir la configuración.', path);
-                return;
-            end
-            fprintf(fid, '# Última configuración utilizada\n');
-            
-            if isfield(config_struct, 'alpha')
-                fprintf(fid, 'alpha = %.5g\n', config_struct.alpha);
-            end
-            if isfield(config_struct, 'precision')
-                fprintf(fid, 'precision = %.5g\n', config_struct.precision);
-            end
-            if isfield(config_struct, 'ultima arquitectura') % Guardar la arquitectura
-                 fprintf(fid, 'última arquitectura = %s\n', mat2str(config_struct.ultima_arquitectura));
-            end
-            fclose(fid);
-            fprintf('Configuración guardada en "%s".\n', ...
-                path);
+            % Sobrescribe el archivo si existe.
+             fprintf('Intentando guardar configuración en "%s"...', filepath); % Mensaje inicio
+             fid = fopen(filepath, 'wt'); % Usar 'wt' para escribir texto
+             if fid == -1
+                 warning('No se pudo abrir "%s" para escribir la configuración.', filepath);
+                 return;
+             end
+             fprintf(fid, '# Última configuración de entrenamiento utilizada (%s)\n', datetime('now','Format','yyyy-MM-dd HH:mm:ss'));
+             
+             % Guardar parámetros si existen en la estructura
+             if isfield(config_struct, 'alpha')
+                 fprintf(fid, 'alpha = %.5g\n', config_struct.alpha);
+             end
+              if isfield(config_struct, 'beta') % Añadido Beta
+                 fprintf(fid, 'beta = %.5g\n', config_struct.beta);
+             end
+             if isfield(config_struct, 'precision')
+                 fprintf(fid, 'precision = %.5g\n', config_struct.precision);
+             end
+             if isfield(config_struct, 'arquitectura') % Cambiado nombre de clave y formato
+                  % Usar mat2str para formato [N M P] o sprintf
+                  arch_str = sprintf('%d ', config_struct.arquitectura); 
+                  fprintf(fid, 'arquitectura = [%s]\n', strtrim(arch_str)); % Formato [N M P]
+             end
+             
+             fclose(fid);
+             fprintf(' Configuración guardada.\n'); % Mensaje fin
         end
     end
 end

@@ -1,6 +1,6 @@
- config.txt
- configuracion.txt
- venv/
+config.txt
+configuracion.txt
+venv/
 __pycache__/
 *.log
 *.tmp
