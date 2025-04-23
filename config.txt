@@ -1,0 +1,5 @@
+# Última configuración de entrenamiento utilizada (2025-04-22 09:02:58)
+alpha = 0.01
+beta = 0.8
+precision = 0.005
+arquitectura = [2352 50 8]
