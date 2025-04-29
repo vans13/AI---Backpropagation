@@ -136,20 +136,7 @@ classdef BP_neuronal_network
                  error('Beta debe ser un escalar numérico entre 0 y 1. Valor recibido: %g', beta);
             end
             if nargin>=7 && isgraphics(axesHandleError)
-                cla(axesHandleError);
                 hl = animatedline(axesHandleError,'Marker','.','LineStyle','-');
-                title(axesHandleError,'Error MSE/2 vs Épocas');
-                xlabel(axesHandleError,'Época');
-                ylabel(axesHandleError,'Error MSE/2');
-                grid(axesHandleError,'on');
-                % Ajustes de estilo SÓLO en ese axes:
-                    axesHandleError.Box = 'off';                     % desactiva la caja completa
-                    axesHandleError.XAxisLocation = 'bottom';       % espina inferior
-                    axesHandleError.YAxisLocation = 'left';         % espina izquierda
-                    axesHandleError.LineWidth = 1;                  % grosor de las espinas
-                    axesHandleError.XColor = [0 0 0];               % color negro
-                    axesHandleError.YColor = [0 0 0];               % color negro
-                    axesHandleError.Layer = 'bottom';               % dibuja ejes encima de la grilla
             else
                 hl = [];
             end
@@ -252,8 +239,8 @@ classdef BP_neuronal_network
                 % Guardar pesos/sesgos (menos frecuente para ahorrar memoria)
                  if mod(epoca, 10) == 0 || epoca == 1 || errorTotal <= precision 
                      if ~isempty(hl) && isvalid(hl)
-                        addpoints(hl, epoca, errorTotal);
-                        drawnow limitrate;
+                         addpoints(hl, epoca, errorTotal); % <-- Añade el punto
+                         drawnow limitrate; % <-- Refresca la gráfica animada
                      end
                      historial_pesos{end+1} = obj.Pesos;   
                      historial_sesgos{end+1} = obj.Sesgos;
