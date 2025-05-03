@@ -1,5 +1,0 @@
-# Última config. entrenamiento (2025-04-30 00:10:55)
-alpha = 0.01
-beta = 0.9
-precision = 0.0005
-arquitectura = 35 20 5
