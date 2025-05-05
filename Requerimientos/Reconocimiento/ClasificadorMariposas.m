@@ -3,22 +3,31 @@ clear; clc; close all;
 
 % --- Parámetros de Preprocesamiento ---
 imageSize = [128 128];
-hue_monarch_range = [0.07, 0.13]; % (Ajustar si es necesario)
-sat_min_monarch = 0.55;          % (Ajustar si es necesario)
-val_min_monarch = 0.4;           % (Ajustar si es necesario)
-hue_isabella_range = [0.16, 0.22]; % (Ajustar si es necesario)
-sat_min_isabella = 0.60;          % (Ajustar si es necesario)
-val_min_isabella = 0.5;           % (Ajustar si es necesario)
-val_max_black = 0.2;
+
+% --- Umbrales HSV (Ajustados según tu especificación) ---
+% Monarch (tonos naranja)
+hue_monarch_range     = [0.03, 0.11];   % ~5–20/179 en OpenCV
+sat_min_monarch       = 150/255;        % ≥150/255 ≃0.588
+val_min_monarch       = 100/255;        % ≥100/255 ≃0.392
+
+% Isabella (tonos amarillo)
+hue_isabella_range    = [0.11, 0.20];   % ~20–35/179 en OpenCV
+sat_min_isabella      = 100/255;        % ≥100/255 ≃0.392
+val_min_isabella      = 100/255;        % ≥100/255 ≃0.392
+
+% Zonas muy oscuras (negro / contornos)
+val_max_black         =  50/255;        % ≤50/255  ≃0.196
+% --- FIN Umbrales HSV Ajustados ---
 
 % --- Parámetros de Depuración Visual ---
-numDebugImages = 4; % Puedes poner 0 si ya no necesitas ver las máscaras
+numDebugImages = 5; % Poner > 0 para ver imágenes y sus máscaras/features
 
 % --- Parámetros de la Red Neuronal ---
-hiddenLayerSizes = [20]; % <<< Probando una capa oculta más grande
+hiddenLayerSizes = [25 10]; % Mantenemos el ajuste para 7 features
 trainFcn = 'trainscg';
-epochs = 250;        % <<< Más épocas (validación puede detener antes)
-goal = 1e-6;         % <<< Objetivo más estricto para crossentropy
+epochs = 2500;
+goal = 0.005;
+performFcn = 'crossentropy';
 
 %% -------- 1. CARGA DE DATOS --------
 disp('Selecciona la carpeta principal del Dataset...');
@@ -38,130 +47,130 @@ disp('Clases encontradas por imageDatastore:'); disp(classNames);
 if numClasses ~= 2, warning('Diseñado para 2 clases, encontradas %d.', numClasses); end
 if isempty(classNames), error('No se detectaron nombres de clase.'); end
 
-%% -------- 2. PREPROCESAMIENTO Y EXTRACCIÓN DE CARACTERÍSTICAS (ESCALARES) --------
+%% -------- 2. PREPROCESAMIENTO Y EXTRACCIÓN DE CARACTERÍSTICAS (7 ESCALARES) --------
 tic;
-disp('Iniciando preprocesamiento y extracción de características ESCALARES...');
+disp('Iniciando preprocesamiento y extracción de 7 características ESCALARES...');
+
 numDebugImages = min(numDebugImages, numImages);
 if numDebugImages > 0
     indicesToShow = sort(randperm(numImages, numDebugImages));
-    disp(['Se mostrarán mapas y pausarán ', num2str(numDebugImages), ' imágenes aleatorias:']);
+    disp(['Se mostrarán mapas y pausarán para ', num2str(numDebugImages), ' imágenes aleatorias:']);
     disp(indicesToShow);
 else
-    indicesToShow = []; % No mostrar ninguna si numDebugImages es 0
+    indicesToShow = [];
 end
 
-numScalarFeatures = 5;
+numScalarFeatures = 7; % Usando 7 features
 allScalarFeatures = zeros(numScalarFeatures, numImages);
 allTargets = zeros(numClasses, numImages);
 
+% --- BUCLE PRINCIPAL SOBRE IMÁGENES ORIGINALES ---
 for i = 1:numImages
-    % --- Código de Preprocesamiento y Cálculo de Features ---
-    % (Igual que antes, se asume correcto)
+    % Leer Imagen Original
     img = readimage(imds, i);
+    currentLabel = imds.Labels(i);
+
+    % Redimensionar
     imgResized = imresize(img, imageSize, 'bicubic');
-    if size(imgResized, 3) == 3
+
+    % Preprocesamiento Básico (Color y Escala de Grises)
+    imgGray = []; % Inicializar por si acaso
+    if size(imgResized, 3) == 3 % Color
         imgHSV = rgb2hsv(imgResized);
-        H = imgHSV(:,:,1); S = imgHSV(:,:,2); V = imgHSV(:,:,3);
+        H=imgHSV(:,:,1); S=imgHSV(:,:,2); V=imgHSV(:,:,3);
         imgGray = rgb2gray(imgResized);
-    else
-        H = zeros(imageSize); S = zeros(imageSize); V = double(imgResized)/255.0;
+        if isfloat(imgGray), imgGrayUint8 = im2uint8(imgGray); else, imgGrayUint8 = imgGray; end
+        if ~isfloat(imgGray), imgGray=im2double(imgGray); end
+    else % Grayscale
         imgGray = imgResized;
-        warning('Imagen %d (%s) es escala de grises.', i, imds.Files{i});
+        if isfloat(imgGray), imgGrayUint8 = im2uint8(imgGray); else, imgGrayUint8 = imgGray; end
+        if ~isfloat(imgGray), imgGray=im2double(imgGray); end
+        H=zeros(imageSize); S=zeros(imageSize); V=imgGray;
     end
+
+    % --- Calcular Mapas Intermedios ---
     maskMonarchOrange = (H >= hue_monarch_range(1) & H <= hue_monarch_range(2) & S >= sat_min_monarch & V >= val_min_monarch);
     maskIsabellaYellow = (H >= hue_isabella_range(1) & H <= hue_isabella_range(2) & S >= sat_min_isabella & V >= val_min_isabella);
     edgeImg = edge(imgGray, 'Sobel');
-    maskBlack = (V <= val_max_black);
-    entropyImg = entropyfilt(imgGray);
-    totalPixels = numel(imgGray);
-    featOrangeRatio = sum(maskMonarchOrange(:)) / totalPixels;
-    featYellowRatio = sum(maskIsabellaYellow(:)) / totalPixels;
-    featEdgeDensity = sum(edgeImg(:)) / totalPixels;
-    featBlackRatio  = sum(maskBlack(:)) / totalPixels;
-    featMeanEntropy = mean(entropyImg(:));
-    allScalarFeatures(:, i) = [featOrangeRatio; featYellowRatio; featEdgeDensity; featBlackRatio; featMeanEntropy];
+    maskBlack = (V <= val_max_black); % Usa el nuevo umbral de negro
+    try
+        entropyImg = entropyfilt(imgGray);
+    catch ME_entropy
+        warning('Error en entropyfilt para imagen %d: %s. Usando 0.', i, ME_entropy.message);
+        entropyImg = zeros(imageSize);
+    end
 
-    % --- Bloque de Depuración Visual (Opcional) ---
+    % --- Calcular Features Escalares (Originales + Textura) ---
+    totalPixels = prod(imageSize);
+    featOrangeRatio = sum(maskMonarchOrange(:))/totalPixels;
+    featYellowRatio = sum(maskIsabellaYellow(:))/totalPixels;
+    featEdgeDensity = sum(edgeImg(:))/totalPixels;
+    featBlackRatio  = sum(maskBlack(:))/totalPixels;
+    featMeanEntropy = mean(entropyImg(:));
+
+    try
+        glcm = graycomatrix(imgGrayUint8, 'Offset', [0 1], 'Symmetric', true);
+        if isempty(glcm), stats.Contrast = 0; stats.Homogeneity = 0; else, stats = graycoprops(glcm, {'Contrast', 'Homogeneity'}); end
+    catch ME_glcm
+        warning('Error calculando GLCM/props para imagen %d: %s. Usando 0.', i, ME_glcm.message);
+        stats.Contrast = 0; stats.Homogeneity = 0;
+    end
+    featContrast = stats.Contrast;
+    featHomogeneity = stats.Homogeneity;
+
+    % Almacenar las 7 características
+    allScalarFeatures(:, i) = [featOrangeRatio; featYellowRatio; featEdgeDensity; featBlackRatio; featMeanEntropy; featContrast; featHomogeneity];
+
+    % Crear Vector Objetivo
+    targetVector = zeros(numClasses, 1);
+    targetVector(strcmp(char(currentLabel), classNames)) = 1;
+    allTargets(:, i) = targetVector;
+
+    % --- BLOQUE DE DEPURACIÓN VISUAL ---
     if ismember(i, indicesToShow)
-         figure('Name', ['Preproc Debug - Imagen ', num2str(i)], 'NumberTitle', 'off');
-         subplot(2, 3, 1); imshow(imgResized); title(['Orig. ', num2str(i)]);
+         figure('Name', ['Preproc Debug - Imagen Original ', num2str(i)], 'NumberTitle', 'off');
+         subplot(2, 3, 1); imshow(imgResized); title(['Original/Resized ', num2str(i)]);
          subplot(2, 3, 2); imshow(maskMonarchOrange); title('Mask Nar.');
          subplot(2, 3, 3); imshow(maskIsabellaYellow); title('Mask Ama.');
          subplot(2, 3, 4); imshow(edgeImg); title('Bordes Sobel');
-         subplot(2, 3, 5); imshow(maskBlack); title(['Mask Negra (V<=',num2str(val_max_black),')']);
+         subplot(2, 3, 5); imshow(maskBlack); title(['Mask Negra (V<=',num2str(val_max_black,'%.3f'),')']); % Muestra nuevo umbral
          subplot(2, 3, 6); imagesc(entropyImg); axis image off; colormap jet; colorbar; title('Entropía');
          drawnow;
          disp('-----------------------------------------------------');
-         disp(['Mostrando MAPAS para imagen ALEATORIA: ', num2str(i)]);
-         disp(['Etiqueta Real: ', char(imds.Labels(i))]);
-         disp(['Calculated Features: O_Ratio=', num2str(featOrangeRatio,'%.3f'), ...
-               ', Y_Ratio=', num2str(featYellowRatio,'%.3f'), ', Edge=', num2str(featEdgeDensity,'%.3f'), ...
-               ', Blk_Ratio=', num2str(featBlackRatio,'%.3f'), ', Entropy=', num2str(featMeanEntropy,'%.2f')]);
+         disp(['Mostrando MAPAS para imagen ORIGINAL: ', num2str(i)]);
+         disp(['Etiqueta Real: ', char(currentLabel)]);
+         fprintf('Features: O_R=%.3f, Y_R=%.3f, Edge=%.3f, Blk_R=%.3f, Entr=%.2f, Contr=%.2f, Homog=%.3f\n', ...
+             featOrangeRatio, featYellowRatio, featEdgeDensity, featBlackRatio, featMeanEntropy, featContrast, featHomogeneity);
          disp('>>> Presiona tecla para continuar...');
          disp('-----------------------------------------------------');
          pause;
     end
 
-    % --- Asignación de Target ---
-    currentLabel = imds.Labels(i);
-    targetVector = zeros(numClasses, 1);
-    targetVector(strcmp(char(currentLabel), classNames)) = 1;
-    allTargets(:, i) = targetVector;
-
-    % Mostrar progreso general
     if mod(i, 50) == 0 || i == numImages
-        fprintf('Preprocesamiento: Calculadas features para %d / %d imágenes...\n', i, numImages);
+        fprintf('Procesamiento: Extraídas features para %d / %d imágenes...\n', i, numImages);
     end
-end
+end % Fin del bucle FOR
 preprocessTime = toc;
-disp(['Preprocesamiento y cálculo de features completado en ', num2str(preprocessTime, '%.2f'), ' segundos.']);
+disp(['Extracción de 7 features completada en ', num2str(preprocessTime, '%.2f'), ' segundos.']);
 
-% % --- Diagnósticos Opcionales (Comentados) ---
-% disp('--- Verificación de Targets (POST-LOOP) ---');
-% unique_targets = unique(allTargets', 'rows'); disp('Etiquetas únicas:'); disp(unique_targets);
-% disp('Suma por columna:'); disp(unique(sum(allTargets, 1))); disp('Muestras por clase:'); disp(sum(allTargets, 2)');
-% if size(unique_targets,1) ~= 2 || ~ismember([1 0], unique_targets, 'rows') || ~ismember([0 1], unique_targets, 'rows')
-%      error('¡Problema con Targets!'); else; disp('Targets OK.'); end
-% disp('--- Verificación de Features Escalares (Antes de Normalizar) ---');
-% feature_std_dev = std(allScalarFeatures, 0, 2); disp('Std Dev Features:'); disp(feature_std_dev');
-% if any(feature_std_dev < 1e-6); warning('Varianza casi cero en feature.'); end
 
-%% -------- 3. NORMALIZACIÓN DE CARACTERÍSTICAS (ESCALARES) --------
+%% -------- 3. NORMALIZACIÓN DE CARACTERÍSTICAS (7 ESCALARES) --------
 mu_scalar = mean(allScalarFeatures, 2);
 sig_scalar = std(allScalarFeatures, 0, 2);
 sig_scalar(sig_scalar < 1e-6) = 1e-6;
 featuresScalarNormalized = (allScalarFeatures - mu_scalar) ./ sig_scalar;
-disp('Características ESCALARES normalizadas.');
+disp('7 Características ESCALARES normalizadas.');
 
 %% -------- 4. DEFINICIÓN Y ENTRENAMIENTO --------
-disp('Configurando red neuronal (Entrada = 5 Features Escalares)...');
+disp('Configurando y entrenando red neuronal (Entrada = 7 Features)...');
 net = patternnet(hiddenLayerSizes, trainFcn);
-
-% --- VOLVER A CROSSENTROPY ---
-disp('>>> Usando "crossentropy" como función de error (estándar para clasificación) <<<');
-net.performFcn = 'crossentropy';
-
-% --- CORRECCIÓN: Configurar la red ANTES de cualquier simulación (incluso diagnóstica) ---
-% Esto asegura que la red conozca el tamaño de entrada/salida esperado.
+net.performFcn = performFcn;
 try
     net = configure(net, featuresScalarNormalized, allTargets);
     disp('Red configurada con tamaño de entrada/salida.');
 catch ME_conf
-    error('Error al configurar la red con configure(): %s\nAsegúrate que featuresScalarNormalized y allTargets no estén vacíos.', ME_conf.message);
+    error('Error al configurar la red: %s', ME_conf.message);
 end
-% ------------------------------------------------------------------------------------
-
-% % --- Diagnóstico Opcional Salida Inicial (Comentado) ---
-% disp('--- Salida de la Red ANTES de Entrenar ---');
-% try
-%     initial_outputs = net(featuresScalarNormalized);
-%     disp('Primeras 5 columnas de la salida inicial:'); disp(initial_outputs(:, 1:min(5, size(initial_outputs, 2))));
-%     if all(abs(initial_outputs(:)) < 1e-9); warning('¡Salida inicial cercana a CERO!'); end
-% catch ME_sim
-%     warning('No se pudo simular la red inicial: %s', ME_sim.message);
-% end
-% disp('------------------------------------------');
-
 net.trainParam.epochs = epochs;
 net.trainParam.goal = goal;
 net.trainParam.showWindow = true;
@@ -170,72 +179,103 @@ net.trainParam.time = inf;
 net.divideParam.trainRatio = 70/100;
 net.divideParam.valRatio = 15/100;
 net.divideParam.testRatio = 15/100;
-
-disp('>>> Iniciando Entrenamiento (con CrossEntropy)... <<<');
+disp(['>>> Iniciando Entrenamiento con 7 Features por imagen... <<<']);
 [netTrained, tr] = train(net, featuresScalarNormalized, allTargets);
 disp('Entrenamiento completado.');
-disp(['Rendimiento final (CrossEntropy en Validación): ', num2str(tr.best_vperf)]);
+disp(['Rendimiento final (',net.performFcn ,' en Validación): ', num2str(tr.best_vperf)]);
 disp(['En Época: ', num2str(tr.best_epoch)]);
-figure; plotperform(tr); % Muestra la gráfica de rendimiento
+figure; plotperform(tr);
 
-%% -------- 5. PRUEBA CON UNA IMAGEN INDIVIDUAL --------
+%% -------- 5. PRUEBA INTERACTIVA CON VARIAS IMÁGENES --------
 disp(' ');
-disp('Selecciona una imagen individual para probar la clasificación...');
-[fileName, filePath] = uigetfile({'*.jpg;*.png;*.bmp;*.tif', 'Selecciona imagen'}, ...
-    'Selecciona imagen para clasificar');
+disp('--- INICIO PRUEBA INTERACTIVA (CON 7 FEATURES) ---');
+numTestImagesToAsk = 5;
 
-if isequal(fileName, 0)
-    disp('No se seleccionó imagen para prueba.');
-else
+for test_iter = 1:numTestImagesToAsk
+    fprintf('\n--- Prueba de Imagen Individual #%d de %d ---\n', test_iter, numTestImagesToAsk);
+    prompt_title = sprintf('Selecciona imagen de prueba #%d/%d', test_iter, numTestImagesToAsk);
+    [fileName, filePath] = uigetfile({'*.jpg;*.png;*.bmp;*.tif', 'Selecciona imagen'}, prompt_title);
+
+    if isequal(fileName, 0) || isequal(filePath, 0)
+        disp('Selección cancelada. Finalizando prueba interactiva.');
+        break;
+    end
+
     fullImagePath = fullfile(filePath, fileName);
     disp(['Probando imagen: ', fullImagePath]);
     try
-        % Recalcular features escalares para prueba...
+        % --- Recalcular las 7 features escalares para prueba ---
         testImg = imread(fullImagePath);
         testImgResized = imresize(testImg, imageSize, 'bicubic');
         if size(testImgResized, 3) == 3
             testImgHSV = rgb2hsv(testImgResized);
-            tH = testImgHSV(:,:,1); tS = testImgHSV(:,:,2); tV = testImgHSV(:,:,3);
+            tH=testImgHSV(:,:,1); tS=testImgHSV(:,:,2); tV=testImgHSV(:,:,3);
             testImgGray = rgb2gray(testImgResized);
+             if isfloat(testImgGray), testImgGrayUint8 = im2uint8(testImgGray); else, testImgGrayUint8 = testImgGray; end
+             if ~isfloat(testImgGray), testImgGray=im2double(testImgGray); end
         else
-            tH = zeros(imageSize); tS = zeros(imageSize); tV = double(testImgResized)/255.0;
             testImgGray = testImgResized;
+             if isfloat(testImgGray), testImgGrayUint8 = im2uint8(testImgGray); else, testImgGrayUint8 = testImgGray; end
+             if ~isfloat(testImgGray), testImgGray=im2double(testImgGray); end
+            tH=zeros(imageSize); tS=zeros(imageSize); tV=testImgGray;
         end
+
         tMaskMonarch = (tH >= hue_monarch_range(1) & tH <= hue_monarch_range(2) & tS >= sat_min_monarch & tV >= val_min_monarch);
         tMaskIsabella = (tH >= hue_isabella_range(1) & tH <= hue_isabella_range(2) & tS >= sat_min_isabella & tV >= val_min_isabella);
         tEdgeImg = edge(testImgGray, 'Sobel');
-        tMaskBlack = (tV <= val_max_black);
-        tEntropyImg = entropyfilt(testImgGray);
-        tTotalPixels = numel(testImgGray);
-        tFeatOrangeRatio = sum(tMaskMonarch(:)) / tTotalPixels;
-        tFeatYellowRatio = sum(tMaskIsabella(:)) / tTotalPixels;
-        tFeatEdgeDensity = sum(tEdgeImg(:)) / tTotalPixels;
-        tFeatBlackRatio  = sum(tMaskBlack(:)) / tTotalPixels;
+        tMaskBlack = (tV <= val_max_black); % Usa el nuevo umbral
+        try
+            tEntropyImg = entropyfilt(testImgGray);
+        catch ME_entropy_test
+             warning('Error en entropyfilt para img prueba: %s. Usando 0.', ME_entropy_test.message);
+             tEntropyImg = zeros(imageSize);
+        end
+         % Calcular GLCM features para prueba
+        try
+            tglcm = graycomatrix(testImgGrayUint8, 'Offset', [0 1], 'Symmetric', true);
+            if isempty(tglcm), tstats.Contrast = 0; tstats.Homogeneity = 0; else, tstats = graycoprops(tglcm, {'Contrast', 'Homogeneity'}); end
+        catch ME_glcm_test
+            warning('Error calculando GLCM/props para img prueba: %s. Usando 0.', ME_glcm_test.message);
+            tstats.Contrast = 0; tstats.Homogeneity = 0;
+        end
+        tFeatContrast = tstats.Contrast;
+        tFeatHomogeneity = tstats.Homogeneity;
+
+        tTotalPixels = prod(imageSize);
+        tFeatOrangeRatio = sum(tMaskMonarch(:))/tTotalPixels;
+        tFeatYellowRatio = sum(tMaskIsabella(:))/tTotalPixels;
+        tFeatEdgeDensity = sum(tEdgeImg(:))/tTotalPixels;
+        tFeatBlackRatio  = sum(tMaskBlack(:))/tTotalPixels;
         tFeatMeanEntropy = mean(tEntropyImg(:));
-        testFeatureVectorScalar = [tFeatOrangeRatio; tFeatYellowRatio; tFeatEdgeDensity; tFeatBlackRatio; tFeatMeanEntropy];
+
+        % Crear vector de 7 features para prueba
+        testFeatureVectorScalar = [tFeatOrangeRatio; tFeatYellowRatio; tFeatEdgeDensity; tFeatBlackRatio; tFeatMeanEntropy; tFeatContrast; tFeatHomogeneity];
+
+        % Normalizar usando mu_scalar y sig_scalar (ahora tienen 7 filas)
         testFeaturesScalarNormalized = (testFeatureVectorScalar - mu_scalar) ./ sig_scalar;
 
-        % Clasificar (La red ahora debería dar salidas tipo probabilidad)
+        % --- Clasificar ---
         predictedScores = netTrained(testFeaturesScalarNormalized);
-        [maxScore, predictedIndex] = max(predictedScores); % maxScore es la probabilidad estimada
+        [maxScore, predictedIndex] = max(predictedScores);
         predictedClassName = classNames{predictedIndex};
 
-        figure;
-        imshow(testImg);
-        title({['Imagen: ', fileName], ...
+        % --- Mostrar Resultados ---
+        figure; imshow(testImg);
+        title({sprintf('Prueba #%d: %s', test_iter, fileName), ...
             ['Predicción: ', strrep(predictedClassName, '_', ' ')], ...
-            ['Confianza: ', num2str(maxScore*100, '%.1f'), '%']}, ... % Ahora maxScore es más significativo
-            'Interpreter', 'none');
+            ['Confianza: ', num2str(maxScore*100, '%.1f'), '%']}, 'Interpreter', 'none');
 
         disp(['Predicción para "', fileName, '": ', predictedClassName]);
         disp(['Scores (Probabilidades): ', num2str(predictedScores', '%.4f ')]);
-        disp(['Input Features (Normalized): ', num2str(testFeaturesScalarNormalized', '%.3f ')]);
+        disp(['Input Features (Normalized): ', num2str(testFeaturesScalarNormalized', '%.3f ')]); % Muestra las 7
 
     catch ME
-        disp('------------------- ERROR -------------------');
-        fprintf('Error al procesar/clasificar la imagen de prueba:\n%s\n', ME.message);
-        fprintf('Archivo: %s\nLínea: %d\n', ME.stack(1).file, ME.stack(1).line);
-        disp('-------------------------------------------');
+        disp('------------------- ERROR DURANTE LA PRUEBA -------------------');
+        fprintf('Error al procesar/clasificar la imagen "%s":\n%s\n', fileName, ME.message);
+        fprintf('En: %s (%s) Línea: %d\n', ME.stack(1).file, ME.stack(1).name, ME.stack(1).line);
+        disp('-----------------------------------------------------------------');
     end
-end
+end % Fin del bucle FOR de pruebas
+
+disp('--- FIN PRUEBA INTERACTIVA ---');
 disp('Script finalizado.');
