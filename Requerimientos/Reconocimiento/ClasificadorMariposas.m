@@ -3,22 +3,22 @@ clear; clc; close all;
 
 % --- Parámetros de Preprocesamiento ---
 imageSize = [128 128];
-hue_monarch_range = [0.07, 0.13]; % (Ajustar según pruebas)
-sat_min_monarch = 0.55;          % (Ajustar según pruebas)
-val_min_monarch = 0.4;           % (Ajustar según pruebas)
-hue_isabella_range = [0.16, 0.22]; % (Ajustar según pruebas)
-sat_min_isabella = 0.60;          % (Ajustar según pruebas)
-val_min_isabella = 0.5;           % (Ajustar según pruebas)
+hue_monarch_range = [0.07, 0.13]; % (Ajustar si es necesario)
+sat_min_monarch = 0.55;          % (Ajustar si es necesario)
+val_min_monarch = 0.4;           % (Ajustar si es necesario)
+hue_isabella_range = [0.16, 0.22]; % (Ajustar si es necesario)
+sat_min_isabella = 0.60;          % (Ajustar si es necesario)
+val_min_isabella = 0.5;           % (Ajustar si es necesario)
 val_max_black = 0.2;
 
 % --- Parámetros de Depuración Visual ---
-numDebugImages = 4;
+numDebugImages = 4; % Puedes poner 0 si ya no necesitas ver las máscaras
 
 % --- Parámetros de la Red Neuronal ---
-hiddenLayerSizes = [10];
+hiddenLayerSizes = [20]; % <<< Probando una capa oculta más grande
 trainFcn = 'trainscg';
-epochs = 100;
-goal = 1e-5;
+epochs = 250;        % <<< Más épocas (validación puede detener antes)
+goal = 1e-6;         % <<< Objetivo más estricto para crossentropy
 
 %% -------- 1. CARGA DE DATOS --------
 disp('Selecciona la carpeta principal del Dataset...');
@@ -32,29 +32,31 @@ numImages = numel(imds.Files);
 disp(['Número total de imágenes encontradas: ', num2str(numImages)]);
 if numImages == 0, error('No se encontraron imágenes.'); end
 
-classNames = categories(imds.Labels); % Cell array con los nombres de clase únicos
+classNames = categories(imds.Labels);
 numClasses = numel(classNames);
-disp('Clases encontradas por imageDatastore:'); disp(classNames); % Muestra las clases detectadas
+disp('Clases encontradas por imageDatastore:'); disp(classNames);
 if numClasses ~= 2, warning('Diseñado para 2 clases, encontradas %d.', numClasses); end
-if isempty(classNames)
-    error('No se detectaron nombres de clase (subcarpetas). Verifica la estructura del Dataset.');
-end
+if isempty(classNames), error('No se detectaron nombres de clase.'); end
 
 %% -------- 2. PREPROCESAMIENTO Y EXTRACCIÓN DE CARACTERÍSTICAS (ESCALARES) --------
 tic;
 disp('Iniciando preprocesamiento y extracción de características ESCALARES...');
 numDebugImages = min(numDebugImages, numImages);
-indicesToShow = sort(randperm(numImages, numDebugImages));
-disp(['Se mostrarán mapas y pausarán ', num2str(numDebugImages), ' imágenes aleatorias para depuración:']);
-disp(indicesToShow);
+if numDebugImages > 0
+    indicesToShow = sort(randperm(numImages, numDebugImages));
+    disp(['Se mostrarán mapas y pausarán ', num2str(numDebugImages), ' imágenes aleatorias:']);
+    disp(indicesToShow);
+else
+    indicesToShow = []; % No mostrar ninguna si numDebugImages es 0
+end
 
 numScalarFeatures = 5;
 allScalarFeatures = zeros(numScalarFeatures, numImages);
-allTargets = zeros(numClasses, numImages); % Inicializa a ceros
+allTargets = zeros(numClasses, numImages);
 
-% --- BUCLE PRINCIPAL DE PREPROCESAMIENTO ---
 for i = 1:numImages
-    % Leer y Preprocesar Imagen (código igual que antes, omitido por brevedad)
+    % --- Código de Preprocesamiento y Cálculo de Features ---
+    % (Igual que antes, se asume correcto)
     img = readimage(imds, i);
     imgResized = imresize(img, imageSize, 'bicubic');
     if size(imgResized, 3) == 3
@@ -66,10 +68,8 @@ for i = 1:numImages
         imgGray = imgResized;
         warning('Imagen %d (%s) es escala de grises.', i, imds.Files{i});
     end
-    maskMonarchOrange = (H >= hue_monarch_range(1) & H <= hue_monarch_range(2) & ...
-        S >= sat_min_monarch & V >= val_min_monarch);
-    maskIsabellaYellow = (H >= hue_isabella_range(1) & H <= hue_isabella_range(2) & ...
-        S >= sat_min_isabella & V >= val_min_isabella);
+    maskMonarchOrange = (H >= hue_monarch_range(1) & H <= hue_monarch_range(2) & S >= sat_min_monarch & V >= val_min_monarch);
+    maskIsabellaYellow = (H >= hue_isabella_range(1) & H <= hue_isabella_range(2) & S >= sat_min_isabella & V >= val_min_isabella);
     edgeImg = edge(imgGray, 'Sobel');
     maskBlack = (V <= val_max_black);
     entropyImg = entropyfilt(imgGray);
@@ -81,35 +81,8 @@ for i = 1:numImages
     featMeanEntropy = mean(entropyImg(:));
     allScalarFeatures(:, i) = [featOrangeRatio; featYellowRatio; featEdgeDensity; featBlackRatio; featMeanEntropy];
 
-    % --- Crear Vector Objetivo (One-Hot Encoding) ---
-    currentLabel = imds.Labels(i); % Tipo categorical
-    targetVector = zeros(numClasses, 1); % Vector de ceros [0; 0]
-
-    % --- DIAGNÓSTICO DETALLADO DE TARGETS (para las primeras 5 imágenes) ---
-    if i <= 5
-        disp(['--- Debug Target Iteración ', num2str(i), ' ---']);
-        fprintf('Archivo: %s\n', imds.Files{i});
-        fprintf('currentLabel (categorical): '); disp(currentLabel);
-        fprintf('classNames (cellstr): '); disp(classNames'); % Muestra en columna
-        % --- Comparación usando conversión explícita a char ---
-        currentLabelStr = char(currentLabel); % Convertir a string
-        comparison_result = strcmp(currentLabelStr, classNames);
-        fprintf('Resultado de strcmp(''%s'', classNames): ', currentLabelStr); disp(comparison_result');
-        if ~any(comparison_result)
-             warning('¡NO SE ENCONTRÓ COINCIDENCIA PARA ESTA ETIQUETA!');
-        end
-        disp('------------------------------------');
-    end
-    % --- FIN DIAGNÓSTICO DETALLADO ---
-
-    % --- Asignación de Target con Conversión Explícita ---
-    targetVector(strcmp(char(currentLabel), classNames)) = 1; % Usa char() para asegurar comparación de strings
-    allTargets(:, i) = targetVector; % Asigna el vector [1;0] o [0;1] (o [0;0] si falla strcmp)
-
-
-    % --- BLOQUE DE DEPURACIÓN VISUAL (Muestra Mapas) ---
+    % --- Bloque de Depuración Visual (Opcional) ---
     if ismember(i, indicesToShow)
-        % (código de visualización igual que antes, omitido por brevedad)
          figure('Name', ['Preproc Debug - Imagen ', num2str(i)], 'NumberTitle', 'off');
          subplot(2, 3, 1); imshow(imgResized); title(['Orig. ', num2str(i)]);
          subplot(2, 3, 2); imshow(maskMonarchOrange); title('Mask Nar.');
@@ -120,12 +93,20 @@ for i = 1:numImages
          drawnow;
          disp('-----------------------------------------------------');
          disp(['Mostrando MAPAS para imagen ALEATORIA: ', num2str(i)]);
-         % ... (resto de disp omitido por brevedad) ...
+         disp(['Etiqueta Real: ', char(imds.Labels(i))]);
+         disp(['Calculated Features: O_Ratio=', num2str(featOrangeRatio,'%.3f'), ...
+               ', Y_Ratio=', num2str(featYellowRatio,'%.3f'), ', Edge=', num2str(featEdgeDensity,'%.3f'), ...
+               ', Blk_Ratio=', num2str(featBlackRatio,'%.3f'), ', Entropy=', num2str(featMeanEntropy,'%.2f')]);
          disp('>>> Presiona tecla para continuar...');
          disp('-----------------------------------------------------');
          pause;
     end
-    % --- FIN DEL BLOQUE DE DEPURACIÓN ---
+
+    % --- Asignación de Target ---
+    currentLabel = imds.Labels(i);
+    targetVector = zeros(numClasses, 1);
+    targetVector(strcmp(char(currentLabel), classNames)) = 1;
+    allTargets(:, i) = targetVector;
 
     % Mostrar progreso general
     if mod(i, 50) == 0 || i == numImages
@@ -135,33 +116,15 @@ end
 preprocessTime = toc;
 disp(['Preprocesamiento y cálculo de features completado en ', num2str(preprocessTime, '%.2f'), ' segundos.']);
 
-% --- DIAGNÓSTICO 1: Verificar Targets (SE MANTIENE) ---
-disp('--- Verificación de Targets (POST-LOOP) ---');
-unique_targets = unique(allTargets', 'rows');
-disp('Etiquetas únicas encontradas:');
-disp(unique_targets);
-disp('Suma por columna (debería ser todo 1s):');
-disp(unique(sum(allTargets, 1)));
-disp('Número de muestras por clase:');
-disp(sum(allTargets, 2)');
-disp('-----------------------------------------');
-% Verifica si ahora sí tenemos las etiquetas correctas
-if size(unique_targets,1) ~= 2 || ~ismember([1 0], unique_targets, 'rows') || ~ismember([0 1], unique_targets, 'rows')
-     error('¡Problema AÚN detectado en la matriz de Targets! Revisa la salida de depuración del bucle y los nombres de carpeta.');
-else
-    disp('¡Verificación de Targets parece CORRECTA!');
-end
-
-
-% --- DIAGNÓSTICO 2: Verificar Varianza de Features (SE MANTIENE) ---
-disp('--- Verificación de Features Escalares (Antes de Normalizar) ---');
-feature_std_dev = std(allScalarFeatures, 0, 2);
-disp('Desviación Estándar de cada feature (Naranja, Amarilla, Borde, Negra, Entropía):');
-disp(feature_std_dev');
-if any(feature_std_dev < 1e-6)
-    warning('Varianza casi cero detectada en alguna característica escalar.');
-end
-disp('------------------------------------------------------------------');
+% % --- Diagnósticos Opcionales (Comentados) ---
+% disp('--- Verificación de Targets (POST-LOOP) ---');
+% unique_targets = unique(allTargets', 'rows'); disp('Etiquetas únicas:'); disp(unique_targets);
+% disp('Suma por columna:'); disp(unique(sum(allTargets, 1))); disp('Muestras por clase:'); disp(sum(allTargets, 2)');
+% if size(unique_targets,1) ~= 2 || ~ismember([1 0], unique_targets, 'rows') || ~ismember([0 1], unique_targets, 'rows')
+%      error('¡Problema con Targets!'); else; disp('Targets OK.'); end
+% disp('--- Verificación de Features Escalares (Antes de Normalizar) ---');
+% feature_std_dev = std(allScalarFeatures, 0, 2); disp('Std Dev Features:'); disp(feature_std_dev');
+% if any(feature_std_dev < 1e-6); warning('Varianza casi cero en feature.'); end
 
 %% -------- 3. NORMALIZACIÓN DE CARACTERÍSTICAS (ESCALARES) --------
 mu_scalar = mean(allScalarFeatures, 2);
@@ -170,13 +133,34 @@ sig_scalar(sig_scalar < 1e-6) = 1e-6;
 featuresScalarNormalized = (allScalarFeatures - mu_scalar) ./ sig_scalar;
 disp('Características ESCALARES normalizadas.');
 
-%% -------- 4. DEFINICIÓN Y ENTRENAMIENTO (CON DIAGNÓSTICOS) --------
+%% -------- 4. DEFINICIÓN Y ENTRENAMIENTO --------
 disp('Configurando red neuronal (Entrada = 5 Features Escalares)...');
 net = patternnet(hiddenLayerSizes, trainFcn);
 
-% --- MANTENER MSE POR AHORA HASTA CONFIRMAR QUE LAS EPOCAS AVANZAN ---
-disp('>>> USANDO "mse" COMO FUNCIÓN DE ERROR PARA DIAGNÓSTICO <<<');
-net.performFcn = 'mse';
+% --- VOLVER A CROSSENTROPY ---
+disp('>>> Usando "crossentropy" como función de error (estándar para clasificación) <<<');
+net.performFcn = 'crossentropy';
+
+% --- CORRECCIÓN: Configurar la red ANTES de cualquier simulación (incluso diagnóstica) ---
+% Esto asegura que la red conozca el tamaño de entrada/salida esperado.
+try
+    net = configure(net, featuresScalarNormalized, allTargets);
+    disp('Red configurada con tamaño de entrada/salida.');
+catch ME_conf
+    error('Error al configurar la red con configure(): %s\nAsegúrate que featuresScalarNormalized y allTargets no estén vacíos.', ME_conf.message);
+end
+% ------------------------------------------------------------------------------------
+
+% % --- Diagnóstico Opcional Salida Inicial (Comentado) ---
+% disp('--- Salida de la Red ANTES de Entrenar ---');
+% try
+%     initial_outputs = net(featuresScalarNormalized);
+%     disp('Primeras 5 columnas de la salida inicial:'); disp(initial_outputs(:, 1:min(5, size(initial_outputs, 2))));
+%     if all(abs(initial_outputs(:)) < 1e-9); warning('¡Salida inicial cercana a CERO!'); end
+% catch ME_sim
+%     warning('No se pudo simular la red inicial: %s', ME_sim.message);
+% end
+% disp('------------------------------------------');
 
 net.trainParam.epochs = epochs;
 net.trainParam.goal = goal;
@@ -187,42 +171,26 @@ net.divideParam.trainRatio = 70/100;
 net.divideParam.valRatio = 15/100;
 net.divideParam.testRatio = 15/100;
 
-% --- DIAGNÓSTICO 4: VER SALIDA INICIAL DE LA RED (SE MANTIENE) ---
-disp('--- Salida de la Red ANTES de Entrenar (Usando MSE) ---');
-try
-    initial_outputs = net(featuresScalarNormalized); % Simular con datos normalizados
-    disp('Primeras 5 columnas de la salida inicial:');
-    disp(initial_outputs(:, 1:min(5, size(initial_outputs, 2))));
-    if all(initial_outputs(:) == 0)
-        warning('¡La salida inicial de la red es CERO!');
-    elseif size(unique(initial_outputs', 'rows'), 1) == 1
-         warning('¡La salida inicial de la red es CONSTANTE!');
-    end
-catch ME_sim
-    warning('No se pudo simular la red inicial: %s', ME_sim.message);
-end
-disp('----------------------------------------------------');
-
-disp('>>> Iniciando Entrenamiento (con MSE)... <<<');
+disp('>>> Iniciando Entrenamiento (con CrossEntropy)... <<<');
 [netTrained, tr] = train(net, featuresScalarNormalized, allTargets);
 disp('Entrenamiento completado.');
-disp(['Rendimiento final (MSE en Validación): ', num2str(tr.best_vperf)]);
-disp(['En Época: ', num2str(tr.best_epoch)]); % <<< ¿ES MAYOR QUE 0 AHORA?
-figure; plotperform(tr);
+disp(['Rendimiento final (CrossEntropy en Validación): ', num2str(tr.best_vperf)]);
+disp(['En Época: ', num2str(tr.best_epoch)]);
+figure; plotperform(tr); % Muestra la gráfica de rendimiento
 
-%% -------- 5. PRUEBA CON UNA IMAGEN INDIVIDUAL (CON 5 FEATURES) --------
-% (Código igual que antes, omitido por brevedad)
+%% -------- 5. PRUEBA CON UNA IMAGEN INDIVIDUAL --------
 disp(' ');
 disp('Selecciona una imagen individual para probar la clasificación...');
 [fileName, filePath] = uigetfile({'*.jpg;*.png;*.bmp;*.tif', 'Selecciona imagen'}, ...
     'Selecciona imagen para clasificar');
+
 if isequal(fileName, 0)
     disp('No se seleccionó imagen para prueba.');
 else
     fullImagePath = fullfile(filePath, fileName);
     disp(['Probando imagen: ', fullImagePath]);
     try
-        % Recalcular features escalares para prueba... (código igual que antes)
+        % Recalcular features escalares para prueba...
         testImg = imread(fullImagePath);
         testImgResized = imresize(testImg, imageSize, 'bicubic');
         if size(testImgResized, 3) == 3
@@ -233,10 +201,8 @@ else
             tH = zeros(imageSize); tS = zeros(imageSize); tV = double(testImgResized)/255.0;
             testImgGray = testImgResized;
         end
-        tMaskMonarch = (tH >= hue_monarch_range(1) & tH <= hue_monarch_range(2) & ...
-            tS >= sat_min_monarch & tV >= val_min_monarch);
-        tMaskIsabella = (tH >= hue_isabella_range(1) & tH <= hue_isabella_range(2) & ...
-            tS >= sat_min_isabella & tV >= val_min_isabella);
+        tMaskMonarch = (tH >= hue_monarch_range(1) & tH <= hue_monarch_range(2) & tS >= sat_min_monarch & tV >= val_min_monarch);
+        tMaskIsabella = (tH >= hue_isabella_range(1) & tH <= hue_isabella_range(2) & tS >= sat_min_isabella & tV >= val_min_isabella);
         tEdgeImg = edge(testImgGray, 'Sobel');
         tMaskBlack = (tV <= val_max_black);
         tEntropyImg = entropyfilt(testImgGray);
@@ -249,21 +215,20 @@ else
         testFeatureVectorScalar = [tFeatOrangeRatio; tFeatYellowRatio; tFeatEdgeDensity; tFeatBlackRatio; tFeatMeanEntropy];
         testFeaturesScalarNormalized = (testFeatureVectorScalar - mu_scalar) ./ sig_scalar;
 
-        % Clasificar
-        predictedOutputs = netTrained(testFeaturesScalarNormalized);
-        [~, predictedIndex] = max(predictedOutputs);
+        % Clasificar (La red ahora debería dar salidas tipo probabilidad)
+        predictedScores = netTrained(testFeaturesScalarNormalized);
+        [maxScore, predictedIndex] = max(predictedScores); % maxScore es la probabilidad estimada
         predictedClassName = classNames{predictedIndex};
-        confidence_approx = max(predictedOutputs);
 
         figure;
         imshow(testImg);
         title({['Imagen: ', fileName], ...
             ['Predicción: ', strrep(predictedClassName, '_', ' ')], ...
-            ['(Score Max: ', num2str(confidence_approx, '%.2f'), ')']}, ...
+            ['Confianza: ', num2str(maxScore*100, '%.1f'), '%']}, ... % Ahora maxScore es más significativo
             'Interpreter', 'none');
 
         disp(['Predicción para "', fileName, '": ', predictedClassName]);
-        disp(['Scores (Salida Cruda de la Red): ', num2str(predictedOutputs', '%.4f ')]);
+        disp(['Scores (Probabilidades): ', num2str(predictedScores', '%.4f ')]);
         disp(['Input Features (Normalized): ', num2str(testFeaturesScalarNormalized', '%.3f ')]);
 
     catch ME
