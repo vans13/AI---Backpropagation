@@ -1,0 +1,246 @@
+% cnn_mariposas.m
+% Script para clasificar especies de mariposas usando una CNN clásica desde cero
+% Sin usar Deep Learning Toolbox
+
+clear; clc; close all;
+
+%% 1. Carga y división del dataset
+dataset_path = 'dataset';
+species = {'Danaus_plexippus', 'Euides_isabella'};
+num_classes = numel(species);
+
+images = {}; labels = [];
+for c = 1:numel(species)
+    files = dir(fullfile(dataset_path, species{c}, '*.png'));
+    for i = 1:numel(files)
+        img = im2double(imread(fullfile(files(i).folder, files(i).name)));
+        images{end+1} = img;
+        labels(end+1) = c - 1;
+    end
+end
+N = numel(labels);
+assert(N>0, 'No se encontraron imágenes en %s', dataset_path);
+
+rng(0); perm_all = randperm(N);
+nTrain = floor(0.8 * N);
+train_idx = perm_all(1:nTrain);
+test_idx  = perm_all(nTrain+1:end);
+X_raw = images; y_raw = labels;
+
+%% 2. Preprocesamiento interactivo
+disp('--- Preprocesamiento ---');
+num_kernels = input('Número de kernels (≥1): ');
+kernels = cell(1, num_kernels);
+for k = 1:num_kernels
+    fprintf('Kernel %d: 1=SobelH 2=SobelV 3=PrewittH 4=PrewittV 5=Laplaciano 6=Personalizado\n', k);
+    sel = input('Opción: ');
+    switch sel
+        case 1, kern = [1 0 -1;2 0 -2;1 0 -1];
+        case 2, kern = [1 2 1;0 0 0;-1 -2 -1];
+        case 3, kern = [1 0 -1;1 0 -1;1 0 -1];
+        case 4, kern = [1 1 1;0 0 0;-1 -1 -1];
+        case 5, kern = [0 -1 0;-1 4 -1;0 -1 0];
+        case 6
+            ks = input('Tamaño impar del kernel (e.g. 3): ');
+            vals = str2num(input(sprintf('Introduce %d valores: ', ks^2),'s'));
+            assert(numel(vals)==ks^2, 'Número de valores incorrecto');
+            kern = reshape(vals, ks, ks);
+        otherwise, error('Opción inválida');
+    end
+    kernels{k} = kern;
+end
+
+disp('Filtros: 1=RGB 2=Grises 3=R 4=G 5=B 6=Invertir');
+filter_opt = input('Opción de filtro: ');
+
+dim = [128 128]; processed = zeros([dim 3 N]);
+for i = 1:N
+    I = X_raw{i};
+    for ch = 1:3
+        C = I(:,:,ch);
+        for k = 1:num_kernels, C = conv2(C, kernels{k}, 'same'); end
+        C = mat2gray(C);
+        I(:,:,ch) = C;
+    end
+    switch filter_opt
+        case 2, G = rgb2gray(I); I = repmat(G, [1 1 3]);
+        case 3, I(:,:,2:3) = 0;
+        case 4, I(:,:,[1 3]) = 0;
+        case 5, I(:,:,1:2) = 0;
+        case 6, I = 1 - I;
+    end
+    processed(:,:,:,i) = imresize(I, dim);
+end
+
+%% 3. Visualización y normalización
+to_show = min(5, nTrain);
+idxs = train_idx(randperm(nTrain, to_show));
+figure('Name','Ejemplos Preprocesados');
+for i = 1:to_show
+    subplot(2,3,i), imshow(processed(:,:,:,idxs(i)));
+    title(sprintf('Idx %d L%d', idxs(i), y_raw(idxs(i))));
+end
+
+% Normalizar canal por canal
+processed = (processed - mean(processed(:))) / std(processed(:));
+
+%% 4. Configuración de arquitectura y parámetros
+disp('--- Arquitectura y Parámetros ---');
+num_hidden = input('Número de capas ocultas densas: ');
+hidden_neurons = zeros(1, num_hidden);
+for h = 1:num_hidden
+    hidden_neurons(h) = input(sprintf('Neurones capa oculta %d: ', h));
+end
+alpha      = input('Alpha (lr): ');
+beta       = input('Beta (momentum, 0 para sin momentum): ');
+max_epochs = input('Épocas máximas: ');
+
+% Parámetros fijos
+tmp_layers = 1; pool_size = [2 2];
+conv_bias = zeros(1,1,num_kernels);
+flat_dim = prod(dim ./ pool_size) * num_kernels;
+fc_w = cell(1, num_hidden+1); fc_b = cell(1, num_hidden+1);
+prev = flat_dim;
+for h = 1:num_hidden
+    fc_w{h} = randn(hidden_neurons(h), prev) * 0.01;
+    fc_b{h} = zeros(hidden_neurons(h), 1);
+    prev = hidden_neurons(h);
+end
+fc_w{end} = randn(num_classes, prev) * 0.01;
+fc_b{end} = zeros(num_classes, 1);
+
+% Inicializar momentum
+dW_prev = cell(size(fc_w)); dB_prev = cell(size(fc_b));
+for i = 1:numel(dW_prev)
+    dW_prev{i} = zeros(size(fc_w{i}));
+    dB_prev{i} = zeros(size(fc_b{i}));
+end
+losses = zeros(max_epochs,1);
+accs = zeros(max_epochs,1);
+%% 5. Entrenamiento con momentum
+tol = 1e-4;
+for ep = 1:max_epochs
+    perm = randperm(nTrain);
+    sum_loss = 0; correct = 0;
+    for j = 1:nTrain
+        % Forward convolución + pooling
+        x = squeeze(processed(train_idx(perm(j)),:,:,:));
+        x = forward_conv(x, kernels, conv_bias);
+        x = relu(x);
+        x = maxpool(x, pool_size);
+        v = x(:);
+        % Forward densas
+        A = cell(1, num_hidden);
+        Z = cell(1, num_hidden+1);
+        inp = v;
+        for h = 1:num_hidden
+            Z{h} = fc_w{h} * inp + fc_b{h};
+            A{h} = relu(Z{h});
+            inp = A{h};
+        end
+        Z{end} = fc_w{end} * inp + fc_b{end};
+        P = softmax(Z{end});
+        y = y_raw(train_idx(perm(j))) + 1;
+        % Loss y acc
+        sum_loss = sum_loss - log(max(P(y), 1e-12));
+        [~, pr] = max(P); if pr == y, correct = correct + 1; end
+        % Backprop
+        delta = P; delta(y) = delta(y) - 1;
+        % Capa salida
+        dW = delta * inp'; dB = delta;
+        dW_prev{end} = beta * dW_prev{end} + alpha * dW;
+        dB_prev{end} = beta * dB_prev{end} + alpha * dB;
+        fc_w{end} = fc_w{end} - dW_prev{end};
+        fc_b{end} = fc_b{end} - dB_prev{end};
+        delta_prev = delta;
+        % Capas ocultas
+        for h = num_hidden:-1:1
+            der = Z{h} > 0;
+            delta = (fc_w{h+1}' * delta_prev) .* der;
+            if h > 1, inp = A{h-1}; else, inp = v; end
+            dW = delta * inp'; dB = delta;
+            dW_prev{h} = beta * dW_prev{h} + alpha * dW;
+            dB_prev{h} = beta * dB_prev{h} + alpha * dB;
+            fc_w{h} = fc_w{h} - dW_prev{h};
+            fc_b{h} = fc_b{h} - dB_prev{h};
+            delta_prev = delta;
+        end
+    end
+    losses(ep) = sum_loss / nTrain;
+    accs(ep) = correct / nTrain;
+    if mod(ep,50) == 0 || ep == 1
+        fprintf('Epoch %d/%d - Loss=%.4f - Acc=%.2f\n', ep, max_epochs, losses(ep), accs(ep));
+    end
+    if ep > 1 && abs(losses(ep) - losses(ep-1)) < tol, break; end
+end
+
+%% 6. Curvas de entrenamiento
+figure; plot(1:ep, losses(1:ep)); xlabel('Época'); ylabel('Pérdida'); title('Pérdida vs Épocas');
+figure; plot(1:ep, accs(1:ep)); xlabel('Época'); ylabel('Precisión'); title('Precisión vs Épocas');
+
+%% 7. Evaluación final
+tp = numel(test_idx); correct = 0; ypred = zeros(1,tp);
+for j = 1:tp
+    x = squeeze(processed(test_idx(j),:,:,:));
+    x = relu(maxpool(forward_conv(x, kernels, conv_bias), pool_size));
+    v = x(:);
+    for h = 1:num_hidden, v = relu(fc_w{h} * v + fc_b{h}); end
+    P = softmax(fc_w{end} * v + fc_b{end}); [~, pr] = max(P);
+    ypred(j) = pr - 1;
+    correct = correct + (ypred(j) == y_raw(test_idx(j)));
+end
+fprintf('Precisión en test: %.2f\n', correct / tp);
+disp('Matriz de confusión:'); disp(confusionmat(y_raw(test_idx)', ypred'));
+
+%% 8. Prueba interactiva
+disp('Indices de prueba (>=3):'); test_ids = input('Indices (e.g. [5 10 20]): ');
+for j = test_ids
+    img = squeeze(processed(j,:,:,:));
+    x = relu(maxpool(forward_conv(img, kernels, conv_bias), pool_size));
+    v = x(:);
+    for h = 1:num_hidden, v = relu(fc_w{h} * v + fc_b{h}); end
+    P = softmax(fc_w{end} * v + fc_b{end}); [~, pr] = max(P);
+    figure; imshow(processed(:,:,:,j));
+    title(sprintf('Idx %d → %s (%.2f)', j, species{pr}, P(pr)));
+end
+
+%% Funciones auxiliares
+function out = forward_conv(inp, kernels, bias)
+    [h, w, d] = size(inp); nk = numel(kernels);
+    out = zeros(h, w, nk);
+    for k = 1:nk
+        tmp = zeros(h, w);
+        for c = 1:d
+            tmp = tmp + conv2(inp(:,:,c), kernels{k}, 'same');
+        end
+        out(:,:,k) = mat2gray(tmp + bias(k));
+    end
+end
+
+function y = relu(x)
+    y = max(0, x);
+end
+
+function p = maxpool(x, ps)
+    [h, w, d] = size(x);
+    oh = floor(h/ps(1)); ow = floor(w/ps(2));
+    p = zeros(oh, ow, d);
+    for c = 1:d
+        m = x(:,:,c);
+        ii = 1;
+        for i = 1:ps(1):h-ps(1)+1
+            jj = 1;
+            for j = 1:ps(2):w-ps(2)+1
+                blk = m(i:i+ps(1)-1, j:j+ps(2)-1);
+                p(ii,jj,c) = max(blk(:));
+                jj = jj + 1;
+            end
+            ii = ii + 1;
+        end
+    end
+end
+
+function s = softmax(z)
+    ez = exp(z - max(z));
+    s = ez / sum(ez);
+end
